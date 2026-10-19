@@ -740,16 +740,17 @@ export function permissionPromptSummary(pane: string): PermissionPromptSummary |
 
   // Title: first non-empty line after the horizontal rule that opens the card.
   let title = ''
+  let titleIndent = -1
   const ruleIdx = lines.slice(0, questionIdx).map((l) => PERMISSION_RULE_LINE_RX.test(l)).lastIndexOf(true)
   if (ruleIdx >= 0) {
     for (const l of lines.slice(ruleIdx + 1, questionIdx)) {
       const t = l.trim()
-      if (t) { title = t; break }
+      if (t) { title = t; titleIndent = l.length - l.trimStart().length; break }
     }
   }
 
   // Reason: the LAST quoted block before the question, rejoined into one
-  // line. Two reasons for the shape:
+  // line, and ONLY when it is provably the card's own reason block.
   //   - last block, not first: the command echo is quoted too, and the last
   //     block is the one that says why consent is needed rather than what
   //     would run.
@@ -757,14 +758,34 @@ export function permissionPromptSummary(pane: string): PermissionPromptSummary |
   //     the first line alone can be as useless as "grep on" (measured on the
   //     bash-grep fixture). Rejoining recovers the sentence; the cap keeps a
   //     long reason from flooding the alert.
+  //
+  // ESZKALTOKEN1019: NOT every card has a reason block. On a plain Bash card
+  // the last quoted block before the question IS the command echo, and the
+  // command line went verbatim into the inter-agent messages that quote this
+  // summary (the urgent-held notice, the stuck-session alert, the
+  // permission-prompt escalation) -- a token passed in argv included. Two
+  // shape checks tell the reason block apart, and BOTH must hold, so a card
+  // shape we have not seen yields no reason (and so no summary) rather than a
+  // command:
+  //   - only blank lines separate it from the question; the command echo is
+  //     followed by its description line ("Locate the functions");
+  //   - the reason block sits at the card's own indent (its │ is not to the
+  //     right of the title); the command echo is nested deeper inside the card
+  //     (measured on all three live captures: title and reason at column 1,
+  //     command at column 3).
+  // The summary never returns the command line, so a caller cannot quote it.
   let reason = ''
   let end = -1
   for (let i = questionIdx - 1; i >= 0; i--) {
     const quoted = PERMISSION_QUOTE_PREFIX_RX.test(lines[i])
     if (quoted && end < 0) end = i
+    else if (!quoted && end < 0 && lines[i].trim() !== '') break // text between the block and the question
     else if (!quoted && end >= 0) {
-      const block = lines.slice(i + 1, end + 1).map((l) => l.replace(PERMISSION_QUOTE_PREFIX_RX, '').trim())
-      reason = block.join(' ').replace(/\s+/g, ' ').trim()
+      const raw = lines.slice(i + 1, end + 1)
+      const quoteCol = Math.min(...raw.map((l) => l.indexOf('│')))
+      if (titleIndent >= 0 && quoteCol <= titleIndent) {
+        reason = raw.map((l) => l.replace(PERMISSION_QUOTE_PREFIX_RX, '').trim()).join(' ').replace(/\s+/g, ' ').trim()
+      }
       break
     }
   }
