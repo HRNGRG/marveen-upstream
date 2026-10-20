@@ -1262,10 +1262,19 @@ NAME_MASK = re.compile(_TECH_COMMON, re.X)
 # mask (NAME_MASK) does not get them either.
 # The path branch does NOT swallow a sentence-final period ('/kapcsolat.'): otherwise the next sentence's capitalised
 # first word would look like a mid-sentence capital, and the accent check would skip it.
+# COPYMASK1019 (2026-10-20, measured on the #2065 corpus check): three more shapes that only carry identifiers, also
+# accent-only for the same reason: a directory with its trailing slash ('kepek/', 'fizetes/*'; a word/word path is
+# already in TECHNICAL), a key=value pair ('funkcio=ertekeles') and a single token in straight quotes ('lakas',
+# "egyeb"). NOT masked, deliberately: a quoted run of several words (that is usually copy, the gate's job) and a bare
+# table or page name in a sentence ('a velemenyek táblán'), which has no shape that tells it from prose: put it in
+# backticks.
 _ACCENT_ONLY = r"""
         (?<![\w&])\#[\w-]+                   # anchor / hashtag (#reszletek): an identifier, not prose
       | (?<![\w-])--[A-Za-z][\w-]*            # command-line flag (--jovahagyott)
       | (?<![\w/])/[\w-]+(?:[./][\w-]+)*/?    # a path that starts with / after a space (az /adatvedelem/ lap), no final period
+      | (?<![\w/.-])[\w.-]+/\**(?=[\s,;:.!?)\]'"]|$)   # a directory written with its trailing slash (kepek/, fizetes/*)
+      | (?<![\w.-])[A-Za-z_][\w.-]*=[^\s,;)\]'"]+   # key=value (funkcio=ertekeles), a parameter, not prose
+      | (?<![\w'"])(['"])[^\s'"]{1,64}\1(?![\w'"])   # a quoted single token ('lakas', "egyeb"): a literal value
 """
 ACCENT_MASK = re.compile(_ACCENT_ONLY, re.X)
 
