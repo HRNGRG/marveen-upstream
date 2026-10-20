@@ -292,7 +292,11 @@ export function printableRuns(buf: Buffer): string {
   const runs: string[] = []
   let cur = ''
   let chars = 0
-  const flush = () => { if (chars >= MIN_RUN) runs.push(cur); cur = ''; chars = 0 }
+  const flush = () => {
+    const run = cur.replace(/^\n+|\n+$/g, '')
+    if (chars >= MIN_RUN && run) runs.push(run)
+    cur = ''; chars = 0
+  }
   let i = 0
   while (i < buf.length) {
     const b = buf[i]
@@ -309,9 +313,13 @@ export function printableRuns(buf: Buffer): string {
       const min = [0, 0, 0x80, 0x800, 0x10000][len]
       if (cp !== -1 && (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))) cp = -1
     }
-    // A C0 control (NUL, a newline, ...) does not end a run, and is not part
-    // of it: text spelled out between NUL bytes (UTF-16LE, or "I\0g\0n...")
-    // still reads as one run, the way a terminal shows it (#2088 delta 4).
+    // A line break stays a line break inside the run (\r\n, \r and \n alike,
+    // one per break), so words on separate lines are not glued into one and
+    // each line is scanned on its own (#2097 review).
+    if (cp === 0x0a || cp === 0x0d) { if (cur && !cur.endsWith('\n')) cur += '\n'; i++; continue }
+    // Any other C0 control (NUL, ...) does not end a run, and is not part of
+    // it: text spelled out between NUL bytes (UTF-16LE, or "I\0g\0n...") still
+    // reads as one run, the way a terminal shows it (#2088 delta 4).
     if (cp >= 0 && cp < 0x20 && cp !== 0x09) { i++; continue }
     const printable = cp === 0x09 || (cp >= 0x20 && cp !== 0x7f && !(cp >= 0x80 && cp <= 0x9f) && cp !== 0x2028 && cp !== 0x2029)
     if (!printable) { flush(); i++; continue }
@@ -463,7 +471,7 @@ export function scanSkillDir(root: string): ScanReport {
       if (strings) {
         // the readable runs of an image are scanned like text; a run is a line
         const runLines = strings.split('\n')
-        if (findings.length < MAX_FINDINGS) findings.push({ file: rel, line: 0, pattern: 'image-text', excerpt: `${runLines.length} readable run(s) between the image bytes, shown below the file` })
+        if (findings.length < MAX_FINDINGS) findings.push({ file: rel, line: 0, pattern: 'image-text', excerpt: `${runLines.length} line(s) of readable text between the image bytes, shown below the file` })
         scanLines(rel, runLines)
       }
       if (findings.length >= MAX_FINDINGS) findingsTruncated = true
