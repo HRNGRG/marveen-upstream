@@ -8,20 +8,20 @@ accent check only (same reason as EKEZETMASZK1018: TECHNICAL also feeds the homo
   N1  'a reszletek/ mappa'      (a directory with its trailing slash)     in a correctly accented message: passes (0)
   N2  '(reszletek/*, ...)'      (the same with a glob)                    : passes
   N3  'funkcio=reszletek'       (key=value)                               : passes
-  N4  "a 'reszletek' kulcs"     (a single token in straight quotes)       : passes
-  N5  'a "reszletek" érték'     (the same in double quotes)               : passes
   P1  'a reszletek lent'        (the word in prose)                       : BLOCKED, the word named
   P2  "'a reszletek lent'"      (a quoted run of several words): NOT masked, deliberately (that is usually copy): BLOCKED
   P3  'reszletek = lent'        (an '=' with spaces is prose punctuation) : BLOCKED
   P4  'a kepek/. Reszletek ...' (the directory branch does not swallow the sentence-final period): the next sentence's
       capitalised first word is still checked: BLOCKED
-  P5  "don't reszletek, isn't"  (apostrophes in English words do not open a quoted literal): BLOCKED
-  S1  the three branches are in _ACCENT_ONLY; S2 neither the TECHNICAL / NAME_MASK source nor their compiled patterns
-      contain them; S2b strip_technical() and strip_for_name() leave the three shapes in place
-  H1-H3 a Cyrillic homoglyph inside 'f.glalas/', 'x=f.glalas' and "'f.glalas'" is still blocked by the homoglyph rule
-KONTROLL: N1-N5 against a copy whose strip_for_accent() returns its input unchanged: each must be BLOCKED.
+  P5  "don't reszletek, isn't"  (English apostrophes do not hide a word): BLOCKED
+  Q1-Q3 a quoted single word is customer copy as often as a literal (Samu, #2085 review), so it is NOT masked:
+      'kattints a "reszletek" gombra', "a gomb felirata 'reszletek'", 'ird be: "reszletek"': each BLOCKED
+  S1  the two branches are in _ACCENT_ONLY; S2 neither the TECHNICAL / NAME_MASK source nor their compiled patterns
+      contain them; S2b strip_technical() and strip_for_name() leave the two shapes in place
+  H1-H2 a Cyrillic homoglyph inside 'f.glalas/' and 'x=f.glalas' is still blocked by the homoglyph rule
+KONTROLL: N1-N3 against a copy whose strip_for_accent() returns its input unchanged: each must be BLOCKED.
 KONTROLL-AG: one copy per new branch with only that branch made never-matching: exactly that branch's cases are BLOCKED
-(konyvtar: N1 N2, kulcs: N3, idezet: N4 N5), the others still pass.
+(konyvtar: N1 N2, kulcs: N3), the others still pass.
 Pass expectations use atment() (exit 0, no FAIL-OPEN / internal-error marker), blocks of the accent rule use tiltva()
 (exit 2, 'HIANYZO EKEZETEK' and 'szo ->'). The temporary directory is used inside try/finally; one left behind is a FAIL.
 Run: python3 scripts/__tests__/outgoing-copy-gate-maszk1019.test.py   (exit 0 = the listed checks passed, 1 = a failure)
@@ -43,7 +43,6 @@ MUTANS_UJ = '    return prose\n'
 AG_MINTAK = {
     "konyvtar": (r"""(?<![\w/.-])[\w.-]+/\**(?=[\s,;:.!?)\]'"]|$)""", {"N1", "N2"}),
     "kulcs": (r"""(?<![\w.-])[A-Za-z_][\w.-]*=[^\s,;)\]'"]+""", {"N3"}),
-    "idezet": (r"""(?<![\w'"])(['"])[^\s'"]{1,64}\1(?![\w'"])""", {"N4", "N5"}),
 }
 SOHA = r"(?!x)x"
 
@@ -54,8 +53,6 @@ ESETEK = {
     "N1": ELEJE + "a reszletek/ mappa is megvan" + VEGE,
     "N2": ELEJE + "az oldalak (reszletek/*, index) is megvannak" + VEGE,
     "N3": ELEJE + "a funkcio=reszletek sor is megvan" + VEGE,
-    "N4": ELEJE + "a 'reszletek' kulcs is megvan" + VEGE,
-    "N5": ELEJE + 'a "reszletek" érték is megvan' + VEGE,
 }
 FAILS = []
 
@@ -99,14 +96,14 @@ def main():
     tech = re.search(r'^_TECH_COMMON = r"""(.*?)"""', src, re.S | re.M).group(1) + \
         re.search(r'^_TECH_SUFFIXED = r"""(.*?)"""', src, re.S | re.M).group(1)
     agak = [m for m, _ in AG_MINTAK.values()]
-    check("S1 the three branches are in the separate _ACCENT_ONLY mask", acc is not None and all(a in acc.group(1) for a in agak))
+    check("S1 the two branches are in the separate _ACCENT_ONLY mask", acc is not None and all(a in acc.group(1) for a in agak))
     check("S2 the TECHNICAL (homoglyph, double hyphen) and NAME_MASK sources do not contain them", not any(a in tech for a in agak))
     g = modul()
     check("S2 nor do the compiled TECHNICAL.pattern and NAME_MASK.pattern",
           not any(a in g.TECHNICAL.pattern or a in g.NAME_MASK.pattern for a in agak))
-    minta = "a reszletek/ a funkcio=reszletek es a 'reszletek' is"
-    check("S2b strip_technical() and strip_for_name() leave the three shapes in place",
-          g.strip_technical(minta).count("reszletek") == 3 and g.strip_for_name(minta).count("reszletek") == 3,
+    minta = "a reszletek/ es a funkcio=reszletek is"
+    check("S2b strip_technical() and strip_for_name() leave the two shapes in place",
+          g.strip_technical(minta).count("reszletek") == 2 and g.strip_for_name(minta).count("reszletek") == 2,
           "%r / %r" % (g.strip_technical(minta), g.strip_for_name(minta)))
     check("S3 the mutant anchor occurs exactly once", src.count(MUTANS_REGI) == 1)
 
@@ -119,12 +116,15 @@ def main():
         ("P2", ELEJE + "a 'reszletek lent vannak' mondat" + VEGE, "a quoted run of several words is not masked"),
         ("P3", ELEJE + "a reszletek = lent sor" + VEGE, "an '=' with spaces is prose"),
         ("P4", "Szia! A mappa neve kepek/. Reszletek holnap jönnek, köszönöm szépen.", "the period after a directory is not swallowed"),
-        ("P5", "Szia! I don't know, reszletek isn't here, köszönöm szépen, holnap jönnek a válaszok.", "an apostrophe does not open a literal"),
+        ("P5", "Szia! I don't know, reszletek isn't here, köszönöm szépen, holnap jönnek a válaszok.", "an English apostrophe does not hide a word"),
+        ("Q1", ELEJE + 'kattints a "reszletek" gombra' + VEGE, "a quoted button label is customer copy"),
+        ("Q2", ELEJE + "a gomb felirata 'reszletek' lesz" + VEGE, "a quoted label in single quotes"),
+        ("Q3", ELEJE + 'ird be: "reszletek"' + VEGE, "a quoted value to type"),
     ):
         kod, ki = run(HOOK, szoveg)
         check("%s %s: BLOCKED and named (2)" % (nev, leiras), tiltva(kod, ki, "reszletek"), ki)
 
-    for nev, tok in (("H1", "f%sglalas/" % CIR_O), ("H2", "x=f%sglalas" % CIR_O), ("H3", "'f%sglalas'" % CIR_O)):
+    for nev, tok in (("H1", "f%sglalas/" % CIR_O), ("H2", "x=f%sglalas" % CIR_O)):
         kod, ki = run(HOOK, "Szia! Holnap átnézem a %s részt is, és küldöm a választ. Köszönöm szépen." % tok)
         check("%s a homoglyph in '%s': still BLOCKED by the homoglyph rule (2)" % (nev, tok), kod == 2 and "nem-latin" in ki, ki)
 
