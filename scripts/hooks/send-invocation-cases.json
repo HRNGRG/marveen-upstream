@@ -1065,6 +1065,191 @@
       "name": "MAILGATEVARARGS1020 documented limit: a literal sender path with variable arguments (unchanged; it passed before too)",
       "cmd": "python3 scripts/support-mail/send.py $ARGS",
       "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run python scripts/support-mail/send.py",
+      "cmd": "uv run python scripts/support-mail/send.py --to a@example.com --subject T",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run python \"$SP/x.py\"",
+      "cmd": "uv run python \"$SP/x.py\" --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run scripts/support-mail/send.py",
+      "cmd": "uv run scripts/support-mail/send.py --to a@example.com --subject T",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run --with requests python3 send.py",
+      "cmd": "uv run --with requests python3 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run -p 3.12 send.py",
+      "cmd": "uv run -p 3.12 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run --python=3.12 send.py",
+      "cmd": "uv run --python=3.12 send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run --script send.py",
+      "cmd": "uv run --script send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run -m send",
+      "cmd": "uv run -m send --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run --module send",
+      "cmd": "uv run --module send --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv --directory scripts/support-mail run send.py",
+      "cmd": "uv --directory scripts/support-mail run send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv -q run -- python send.py",
+      "cmd": "uv -q run -- python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run \"$P\"",
+      "cmd": "uv run \"$P\" --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run --with-requirements r.txt --env-file .env python3 -u send.py",
+      "cmd": "uv run --with-requirements r.txt --env-file .env python3 -u send.py --t=a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: cd \"$WT\" && uv run python ./scripts/support-mail/send.py",
+      "cmd": "cd \"$WT\" && uv run python ./scripts/support-mail/send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: pipx run scripts/support-mail/send.py",
+      "cmd": "pipx run scripts/support-mail/send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: pipx run --spec . python send.py",
+      "cmd": "pipx run --spec . python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: poetry run python send.py",
+      "cmd": "poetry run python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: pdm run python send.py",
+      "cmd": "pdm run python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: hatch run python send.py",
+      "cmd": "hatch run python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: pipenv run python send.py",
+      "cmd": "pipenv run python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: rye run python send.py",
+      "cmd": "rye run python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: conda run -n mail python send.py",
+      "cmd": "conda run -n mail python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: micromamba run -n mail python send.py",
+      "cmd": "micromamba run -n mail python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: env -i uv run python send.py",
+      "cmd": "env -i uv run python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: timeout 30 uv run python send.py",
+      "cmd": "timeout 30 uv run python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020: a launcher run in front of a shell -c that sends: uv run sh -c",
+      "cmd": "uv run sh -c \"python3 send.py --to a@example.com\"",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: uv run pytest -q",
+      "cmd": "uv run pytest -q",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: uv run python \"$SP/gen.py\" \"$SP/out.json\"",
+      "cmd": "uv run python \"$SP/gen.py\" \"$SP/out.json\"",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: uv run python x.py --to-date 2026-10-20",
+      "cmd": "uv run python x.py --to-date 2026-10-20",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: uv pip install requests",
+      "cmd": "uv pip install requests",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: uv run --with pandas python -c \"print(1)\"",
+      "cmd": "uv run --with pandas python -c \"print(1)\"",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: uv run -m pytest tests/",
+      "cmd": "uv run -m pytest tests/",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: pipx run black .",
+      "cmd": "pipx run black .",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: poetry run pytest",
+      "cmd": "poetry run pytest",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: conda run -n base python report.py",
+      "cmd": "conda run -n base python report.py",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: ordinary launcher work: uv sync && uv run python scripts/build.py",
+      "cmd": "uv sync && uv run python scripts/build.py",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: the sender script under a launcher without a recipient flag (no send): uv run send.py",
+      "cmd": "uv run send.py",
+      "expected": false
     }
   ]
 }
