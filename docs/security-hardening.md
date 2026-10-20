@@ -310,6 +310,19 @@ nothing until WebSearch is called. Its label tells the agent to read and use
 the content's facts and to refuse only its imperatives, so an agent does not
 stop on a round whose content was its job (BORITOOLVASAT921).
 
+Two strengths of signal. A forged security frame (`<untrusted>`, `<system-reminder>`,
+a directive header, the scrub sentinel, a channel envelope) has no benign reading,
+so the label tells the agent to report it to the owner. The content heuristics
+(instruction override, role reassignment, agent addressing, credential target,
+exfil shape) also match ordinary technical text, such as an install line, a `.env`
+step or an `api_key:` field. For those, the label only says not to act on the
+content's say-so, and that its facts are usable.
+
+There is no per-agent opt-out: the startup migration re-adds a removed WebSearch
+group on the next dashboard start, as it does for the gates. An operator who
+wires the envelope under their own matcher that also covers WebSearch (the
+browser pattern below) keeps theirs, and no second copy is added.
+
 A browser MCP server is still **not wired by default**, because an install with
 no browser gains nothing from it. Operators who run one add its matcher
 themselves, in the project `settings.json` or `settings.local.json`:

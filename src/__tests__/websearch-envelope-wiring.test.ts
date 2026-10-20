@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import {
-  ensureWebSearchEnvelope, writeAgentSettingsFromProfile, agentSettingsPath,
+  ensureWebSearchEnvelope, injectWebSearchEnvelope, writeAgentSettingsFromProfile, agentSettingsPath,
   WEBSEARCH_ENVELOPE_MATCHER, WEBSEARCH_ENVELOPE_SCRIPT,
 } from '../web/agent-scaffold.js'
 import { listProfileTemplates, loadProfileTemplate } from '../web/profiles.js'
@@ -87,6 +87,30 @@ describe('WebSearch envelope: where it lands', () => {
     const groups = envelopeGroups(settings())
     expect(groups).toHaveLength(1)
     expect(groups[0].hooks[0].command).toBe(expected)
+  })
+
+  it("an operator's own hook in a WebSearch group survives; an envelope the operator wired under a covering matcher is not doubled (#2091 review)", () => {
+    const own = { type: 'command', command: 'python3 "/x/own-audit.py"', timeout: 5 }
+    const theirEnvelope = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    // (1) WebSearch group with [their envelope, own hook]: own hook stays, one envelope in total
+    const s1: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'WebSearch', hooks: [theirEnvelope, own] }] } }
+    expect(injectWebSearchEnvelope(s1)).toBe(true)
+    const flat1 = (s1.hooks.PostToolUse as Group[]).flatMap((g) => g.hooks)
+    expect(flat1.filter((h) => h.command.includes(WEBSEARCH_ENVELOPE_SCRIPT))).toHaveLength(1)
+    expect(flat1).toContainEqual(own)
+    // (2) WebSearch group with [own hook] only: kept, ours added next to it
+    const s2: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'WebSearch', hooks: [own] }] } }
+    injectWebSearchEnvelope(s2)
+    expect(s2.hooks.PostToolUse).toHaveLength(2)
+    expect(s2.hooks.PostToolUse[0]).toEqual({ matcher: 'WebSearch', hooks: [own] })
+    // (3) the docs' browser pattern already covering WebSearch: nothing added, no change
+    const s3: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'mcp__playwright__browser_.*|mcp__chrome.*|WebSearch', hooks: [theirEnvelope] }] } }
+    expect(injectWebSearchEnvelope(s3)).toBe(false)
+    expect(s3.hooks.PostToolUse).toHaveLength(1)
+    // a browser-only operator matcher does NOT cover WebSearch: ours is added
+    const s4: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'mcp__playwright__browser_.*', hooks: [theirEnvelope] }] } }
+    expect(injectWebSearchEnvelope(s4)).toBe(true)
+    expect(envelopeGroups(s4 as any).map((g) => g.matcher)).toEqual(['mcp__playwright__browser_.*', 'WebSearch'])
   })
 
   it('never writes the main agent: its entry is in the repo-shipped project settings instead', () => {

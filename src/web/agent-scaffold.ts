@@ -1491,21 +1491,6 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
   return profileWantsDestructiveGate(p)
 }
 
-// CHILDCLAUDEPOLLER1010. Which agents get the child-claude channel guard: every
-// sub-agent. A child `claude` started from a channel-owning session's Bash
-// inherits TELEGRAM_STATE_DIR / CLAUDE_CONFIG_DIR, loads the channel plugin,
-// and the plugin's bot.pid logic SIGTERMs the PARENT's live poller -- measured
-// 2026-10-10 with three `claude -p` calls from a live sub-agent, see
-// docs/mcp-list-channel-plugin.md. The guard itself acts only where the
-// Telegram state dir the CHILD's plugin would use holds a bot token, so a plain
-// child of a sub-agent without a bot is never blocked; only a child redirected
-// at a token-bearing state dir (an unset or overridden TELEGRAM_STATE_DIR,
-// env -i) is. The main agent is left to its
-// committed project settings, as with the outgoing-copy gate: its settings are
-// the shared ~/.claude config, which every interactive Claude session on the
-// machine reads, so wiring a deny hook there is the operator's call. The
-// guard resolves the state dir the way the plugin does (including the
-// ~/.claude/channels/telegram fallback), so it works there if wired.
 // MARVEENGAPS1020 (c): WebSearch result snippets are external text that no
 // allowlist chose, and nothing framed them on the way in (docs/security-
 // hardening.md, "What the URL gate does not cover"). The opt-in envelope hook
@@ -1531,25 +1516,39 @@ function webSearchEnvelopeCommand(): string {
   return `python3 "${scriptPath}"`
 }
 
-export function injectWebSearchEnvelope(existing: Record<string, unknown>): void {
+// Removes OUR envelope hook only (a hook in a group, not the group: an
+// operator's own hook sharing a WebSearch group stays), then adds the managed
+// group -- unless an operator already wired the envelope under a matcher that
+// covers WebSearch (e.g. the docs' "...|WebSearch" browser pattern), where a
+// second copy would run the hook twice. Returns whether anything changed.
+function matcherCoversWebSearch(matcher: unknown): boolean {
+  if (typeof matcher !== 'string' || matcher === '') return true // no matcher = every tool
+  try { return new RegExp(`^(?:${matcher})$`).test(WEBSEARCH_ENVELOPE_MATCHER) } catch { return false }
+}
+
+export function injectWebSearchEnvelope(existing: Record<string, unknown>): boolean {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
   const command = webSearchEnvelopeCommand()
   // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: WEBSEARCH_ENVELOPE_MATCHER,
-    hooks: [{ type: 'command', command, timeout: 10 }],
+  if (isUnsafeHookCommand(command)) return false
+  const before = JSON.stringify(hooks.PostToolUse ?? null)
+  type G = { matcher?: unknown; hooks?: Array<{ command?: unknown }> }
+  const prev = (Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse : []) as G[]
+  const isEnvelope = (h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes(WEBSEARCH_ENVELOPE_SCRIPT)
+  const kept: G[] = []
+  for (const g of prev) {
+    if (g?.matcher !== WEBSEARCH_ENVELOPE_MATCHER || !Array.isArray(g.hooks)) { kept.push(g); continue }
+    const rest = g.hooks.filter((h) => !isEnvelope(h))
+    if (rest.length) kept.push({ ...g, hooks: rest })
   }
-  const prev = Array.isArray(hooks.PostToolUse) ? (hooks.PostToolUse as unknown[]) : []
-  hooks.PostToolUse = [
-    ...prev.filter((e) => {
-      if (!JSON.stringify(e).includes(WEBSEARCH_ENVELOPE_SCRIPT)) return true
-      return (e as { matcher?: unknown })?.matcher !== WEBSEARCH_ENVELOPE_MATCHER
-    }),
-    entry,
-  ]
+  const operatorWired = kept.some((g) => matcherCoversWebSearch(g?.matcher) && Array.isArray(g.hooks) && g.hooks.some(isEnvelope))
+  if (!operatorWired) {
+    kept.push({ matcher: WEBSEARCH_ENVELOPE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
+  }
+  hooks.PostToolUse = kept
+  return JSON.stringify(hooks.PostToolUse) !== before
 }
 
 // Startup migration twin for the EXISTING fleet (the scaffold rewrites a
@@ -1561,19 +1560,27 @@ export function ensureWebSearchEnvelope(name: string): boolean {
   if (!existsSync(settingsPath)) return false
   let settings: Record<string, unknown> = {}
   try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
-  const hooks = (settings.hooks && typeof settings.hooks === 'object')
-    ? settings.hooks as Record<string, unknown>
-    : {}
-  const post = Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse : []
-  const command = webSearchEnvelopeCommand()
-  const wiredHere = post.some((e) => (e as { matcher?: unknown })?.matcher === WEBSEARCH_ENVELOPE_MATCHER
-    && hookCommandWired(JSON.stringify(e), command))
-  if (wiredHere) return false
-  injectWebSearchEnvelope(settings)
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false
+  if (!injectWebSearchEnvelope(settings)) return false
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
 
+// CHILDCLAUDEPOLLER1010. Which agents get the child-claude channel guard: every
+// sub-agent. A child `claude` started from a channel-owning session's Bash
+// inherits TELEGRAM_STATE_DIR / CLAUDE_CONFIG_DIR, loads the channel plugin,
+// and the plugin's bot.pid logic SIGTERMs the PARENT's live poller -- measured
+// 2026-10-10 with three `claude -p` calls from a live sub-agent, see
+// docs/mcp-list-channel-plugin.md. The guard itself acts only where the
+// Telegram state dir the CHILD's plugin would use holds a bot token, so a plain
+// child of a sub-agent without a bot is never blocked; only a child redirected
+// at a token-bearing state dir (an unset or overridden TELEGRAM_STATE_DIR,
+// env -i) is. The main agent is left to its
+// committed project settings, as with the outgoing-copy gate: its settings are
+// the shared ~/.claude config, which every interactive Claude session on the
+// machine reads, so wiring a deny hook there is the operator's call. The
+// guard resolves the state dir the way the plugin does (including the
+// ~/.claude/channels/telegram fallback), so it works there if wired.
 export const CHILD_CLAUDE_GUARD_SCRIPT = 'child-claude-channel-guard.mjs'
 
 export function agentGetsChildClaudeGuard(name: string): boolean {
