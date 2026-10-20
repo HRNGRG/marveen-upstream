@@ -335,6 +335,35 @@ describe('browser-content-notice (envelope layer)', () => {
     expect(readFileSync(errlog, 'utf-8')).toMatch(/\[browser-content-notice\] audit line not written/)
   })
 
+  it('a symlinked lock file is refused: nothing is created at its target, and the drop leaves a trace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bcn-lock-'))
+    const logPath = join(dir, 'browser-content.log')
+    const target = join(dir, 'planted-target')
+    symlinkSync(target, `${logPath}.lock`)
+    const errlog = join(dir, 'hook-errors.log')
+    const out = execFileSync('python3', [HOOK], {
+      input: JSON.stringify(mcpPayload('text')), encoding: 'utf-8',
+      env: { ...process.env, BROWSER_CONTENT_LOG: logPath, HOOK_ERRLOG_PATH: errlog },
+    })
+    expect(JSON.parse(out).hookSpecificOutput.additionalContext).toContain('[UNTRUSTED-CONTENT') // the label still goes out
+    expect(existsSync(target)).toBe(false)
+    expect(existsSync(logPath)).toBe(false)
+    expect(readFileSync(errlog, 'utf-8')).toMatch(/\[browser-content-notice\] audit line not written/)
+  })
+
+  it('the log mode is set on the open file: an existing 0644 log ends up 0600 after an append', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bcn-mode-'))
+    const logPath = join(dir, 'browser-content.log')
+    writeFileSync(logPath, 'old\n')
+    chmodSync(logPath, 0o644)
+    execFileSync('python3', [HOOK], {
+      input: JSON.stringify(mcpPayload('text')), encoding: 'utf-8',
+      env: { ...process.env, BROWSER_CONTENT_LOG: logPath },
+    })
+    expect(statSync(logPath).mode & 0o777).toBe(0o600)
+    expect(readFileSync(logPath, 'utf-8')).toContain('old\n')
+  })
+
   it('concurrent writers lose no generation: a slow rotation does not let a second writer rotate on a stale size', () => {
     // Deterministic, in one python process: writer A's rotation is slowed down,
     // writer B starts during it. Without the lock B also sees the old size,

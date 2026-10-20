@@ -323,7 +323,9 @@ def log_record(record):
         # size check, the rotation and the append happen under one lock, so two
         # writers cannot both rotate on the same stale size and lose a
         # generation (#2092 review).
-        lock_fd = os.open(str(LOG_PATH) + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+        # The lock file is opened without following a link too: a planted
+        # symlink there would otherwise create an empty file at its target.
+        lock_fd = os.open(str(LOG_PATH) + ".lock", os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             if fcntl is not None:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
@@ -336,10 +338,12 @@ def log_record(record):
                 pass
             fd = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
             try:
+                # On the open file, not the name: a link swapped in after the
+                # open would take the chmod to its target.
+                os.fchmod(fd, 0o600)
                 os.write(fd, line)
             finally:
                 os.close(fd)
-            os.chmod(LOG_PATH, 0o600)
         finally:
             if fcntl is not None:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
