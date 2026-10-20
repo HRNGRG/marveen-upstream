@@ -444,9 +444,12 @@ approved on the dashboard's Skills page, which shows first:
 - where it will land, named plainly: global means the whole fleet loads it
   (a skill queued for the main agent is global, because its root is the global
   one);
-- every file IN FULL: the text of every non-binary file, the size and sha256 of
-  every file (a binary by those two only), and whether it is executable, with
-  scripts, binaries and executables listed first;
+- every file IN FULL: the text of every file, losslessly (control bytes such as
+  NUL, and bytes that are not UTF-8, appear as `<0xNN>` and are flagged), the
+  size and sha256 of every file, and whether it is executable, with scripts,
+  binaries and executables listed first. An image or a PDF is shown by size and
+  sha256 only; a compiled program (ELF, PE, Mach-O) cannot be reviewed there, so
+  a skill that carries one cannot be approved from the dashboard;
 - the scan findings: invisible Unicode (zero-width and tag characters), forged
   security envelopes and directive headers, instruction overrides, credential
   targets, exfil and pipe-to-shell shapes, decode-and-run, shell exec,

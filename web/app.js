@@ -11782,7 +11782,12 @@ function renderPendingSkills(box, list) {
       }
       card.appendChild(fl)
     }
-    if (!p.approvable) card.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.not_approvable')))
+    if (report.findingsTruncated) card.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.findings_truncated')))
+    if (Array.isArray(report.unreviewable) && report.unreviewable.length) {
+      card.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.unreviewable', { list: report.unreviewable.join(', ') })))
+    } else if (!p.approvable) {
+      card.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.not_approvable')))
+    }
 
     const actions = pendingEl('div', 'skills-pending-actions')
     const approve = pendingEl('button', 'btn-primary btn-compact', t('skills.pending.approve'))

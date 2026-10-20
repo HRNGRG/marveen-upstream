@@ -89,6 +89,12 @@ export interface ScanReport {
   // true when the bounds below stopped the scan: the approver is told the
   // list is incomplete instead of reading a short list as a clean one.
   truncated: boolean
+  // true when the findings list hit its cap. Every file is still shown in
+  // full, so this alone does not block the approval (#2088 review).
+  findingsTruncated: boolean
+  // Files the approver cannot read (a native executable): their presence
+  // makes the skill not approvable from the dashboard.
+  unreviewable: string[]
 }
 
 export interface PendingSkill extends PendingMeta {
@@ -258,6 +264,51 @@ export function skillDirHash(root: string, meta?: Pick<PendingMeta, 'name' | 'ta
 
 const SCRIPT_EXT = new Set(['.sh', '.bash', '.zsh', '.py', '.js', '.mjs', '.cjs', '.ts', '.rb', '.pl', '.php', '.ps1', '.bat', '.cmd', '.command', '.applescript', '.scpt'])
 const MARKDOWN_EXT = new Set(['.md', '.markdown', '.txt'])
+// Shown by size and sha256 only: an image or a PDF has no text to read, and a
+// model opening one gets the picture, not instructions hidden in the bytes.
+const MEDIA_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.pdf'])
+
+function isNativeExecutable(buf: Buffer): boolean {
+  if (buf.length < 4) return false
+  if (buf[0] === 0x7f && buf.toString('latin1', 1, 4) === 'ELF') return true
+  if (buf[0] === 0x4d && buf[1] === 0x5a) return true // MZ (PE)
+  const be = buf.readUInt32BE(0)
+  return [0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe].includes(be) // Mach-O / fat
+}
+
+// Lossless text for review (#2088 review): a NUL byte made a .md "binary",
+// so it was neither shown nor scanned, yet a SKILL.md could tell the model to
+// cat it. Every byte now reaches the approver: valid UTF-8 as text, every
+// invalid byte as <0xNN>, and control characters (NUL included) as <0xNN>,
+// so nothing is dropped or silently replaced with U+FFFD.
+export function reviewText(buf: Buffer): { text: string; invalidUtf8: number; controlBytes: number } {
+  let out = ''
+  let invalidUtf8 = 0
+  let controlBytes = 0
+  const hex = (b: number) => `<0x${b.toString(16).toUpperCase().padStart(2, '0')}>`
+  let i = 0
+  while (i < buf.length) {
+    const b = buf[i]
+    let len = b < 0x80 ? 1 : (b & 0xe0) === 0xc0 ? 2 : (b & 0xf0) === 0xe0 ? 3 : (b & 0xf8) === 0xf0 ? 4 : 0
+    let cp = -1
+    if (len === 1) cp = b
+    else if (len > 1 && i + len <= buf.length) {
+      cp = b & (0xff >> (len + 1))
+      for (let k = 1; k < len; k++) {
+        const c = buf[i + k]
+        if ((c & 0xc0) !== 0x80) { cp = -1; break }
+        cp = (cp << 6) | (c & 0x3f)
+      }
+      const min = [0, 0, 0x80, 0x800, 0x10000][len]
+      if (cp !== -1 && (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))) cp = -1
+    }
+    if (cp === -1) { out += hex(b); invalidUtf8++; i++; continue }
+    if ((cp < 0x20 && cp !== 0x09 && cp !== 0x0a && cp !== 0x0d) || cp === 0x7f) { out += hex(cp); controlBytes++ }
+    else out += String.fromCodePoint(cp)
+    i += len
+  }
+  return { text: out, invalidUtf8, controlBytes }
+}
 
 // Invisible to a reader, read by the model: zero-width, bidi controls, the
 // Unicode tag block. Escaped so this source file stays plain ASCII.
@@ -291,6 +342,8 @@ export function scanSkillDir(root: string): ScanReport {
   const findings: ScanFinding[] = []
   let totalBytes = 0
   let truncated = false
+  let findingsTruncated = false
+  const unreviewable: string[] = []
   for (const rel of filesUnder(root)) {
     if (files.length >= MAX_FILES) { truncated = true; break }
     const abs = join(root, rel)
@@ -307,9 +360,11 @@ export function scanSkillDir(root: string): ScanReport {
     }
     let buf: Buffer
     try { buf = readFileSync(abs) } catch { continue }
-    const head = buf.subarray(0, 4)
-    const isBinary = buf.includes(0) || (head[0] === 0x7f && head.toString('latin1', 1, 4) === 'ELF') || head.toString('latin1', 0, 2) === 'MZ'
-    const text = isBinary ? '' : buf.toString('utf-8')
+    const native = isNativeExecutable(buf)
+    const media = !native && MEDIA_EXT.has(ext)
+    const isBinary = native || media
+    const reviewed = isBinary ? null : reviewText(buf)
+    const text = reviewed ? reviewed.text : ''
     const nl = text.indexOf('\n')
     const shebang = !isBinary && text.startsWith('#!') ? text.slice(0, nl < 0 ? 80 : Math.min(nl, 80)) : undefined
     const kind: ScanFile['kind'] = isBinary ? 'binary'
@@ -317,7 +372,18 @@ export function scanSkillDir(root: string): ScanReport {
       : MARKDOWN_EXT.has(ext) ? 'markdown' : 'other'
     const sha256 = createHash('sha256').update(buf).digest('hex')
     files.push({ path: rel, size: st.size, kind, executable, ...(shebang ? { shebang } : {}), sha256, ...(isBinary ? {} : { text }) })
-    if (isBinary) continue
+    if (native) {
+      unreviewable.push(rel)
+      if (findings.length < MAX_FINDINGS) findings.push({ file: rel, line: 0, pattern: 'native-executable', excerpt: 'a compiled program: its content cannot be reviewed here' })
+      continue
+    }
+    if (!reviewed) continue
+    if (reviewed.controlBytes && findings.length < MAX_FINDINGS) {
+      findings.push({ file: rel, line: 0, pattern: 'control-bytes', excerpt: `${reviewed.controlBytes} control byte(s), shown as <0xNN>` })
+    }
+    if (reviewed.invalidUtf8 && findings.length < MAX_FINDINGS) {
+      findings.push({ file: rel, line: 0, pattern: 'invalid-utf8', excerpt: `${reviewed.invalidUtf8} byte(s) that are not UTF-8, shown as <0xNN>` })
+    }
     const lines = text.split('\n')
     for (let i = 0; i < lines.length && findings.length < MAX_FINDINGS; i++) {
       const line = lines[i]
@@ -329,9 +395,9 @@ export function scanSkillDir(root: string): ScanReport {
         if (m) findings.push({ file: rel, line: i + 1, pattern: name, excerpt: excerpt(line, m.index) })
       }
     }
-    if (findings.length >= MAX_FINDINGS) truncated = true
+    if (findings.length >= MAX_FINDINGS) findingsTruncated = true
   }
-  return { files, findings, totalBytes, truncated }
+  return { files, findings, totalBytes, truncated, findingsTruncated, unreviewable }
 }
 
 // One pending skill with the FULL text of every non-binary file: what the
@@ -341,7 +407,7 @@ export function getPending(id: string): PendingSkill | null {
   if (!meta) return null
   const skillRoot = join(entryDir(id), 'skill')
   const report = scanSkillDir(skillRoot)
-  return { ...meta, hash: skillDirHash(skillRoot, meta), report, approvable: !report.truncated }
+  return { ...meta, hash: skillDirHash(skillRoot, meta), report, approvable: !report.truncated && report.unreviewable.length === 0 }
 }
 
 // The queue, without file texts (GET /api/skills/pending).
@@ -369,8 +435,12 @@ export function approvePending(id: string, hash: unknown): ApproveResult {
     return { ok: false, status: 409, error: 'The pending skill changed since it was shown (hash mismatch); reload and review it again' }
   }
   // What could not be shown in full cannot be approved from the dashboard.
-  if (scanSkillDir(skillRoot).truncated) {
+  const scan = scanSkillDir(skillRoot)
+  if (scan.truncated) {
     return { ok: false, status: 409, error: 'The pending skill is over the review bounds and cannot be shown in full; it cannot be approved here' }
+  }
+  if (scan.unreviewable.length) {
+    return { ok: false, status: 409, error: `The pending skill contains a file that cannot be reviewed here (${scan.unreviewable.join(', ')}); it cannot be approved here` }
   }
   // A link planted into the pending dir after the scan would go live with it.
   if (hasSymlink(skillRoot)) return { ok: false, status: 400, error: 'The pending skill contains a symlink; it cannot be approved' }
