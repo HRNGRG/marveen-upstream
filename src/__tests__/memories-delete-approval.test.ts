@@ -143,6 +143,44 @@ describe('data_delete below level 3: the delete needs an approval', () => {
     expect(getMemoryById(id)).toBeDefined()
   })
 
+  it('the anchor includes the memory id: an approval for one memory cannot delete another with the same content', async () => {
+    const { id: a } = saveAgentMemory('leanscout', 'same words', 'hot')
+    const { id: b } = saveAgentMemory('leanscout', 'same words', 'hot')
+    const approvalId = (await del(a)).body.approval_id
+    resolveApproval(approvalId, 'approved', 'owner')
+    expect((await del(b, approvalId)).body.reason).toBe('hash_mismatch')
+    expect(getMemoryById(b)).toBeDefined()
+    expect((await del(a, approvalId)).status).toBe(200)
+  })
+
+  it('ABA: a row restored with the same id and content gets a fresh request; the consumed approval is not offered or usable', async () => {
+    const { id } = saveAgentMemory('leanscout', 'restorable', 'hot')
+    const before = getDb().prepare('SELECT * FROM memories WHERE id = ?').get(id) as Record<string, unknown>
+    const first = (await del(id)).body.approval_id
+    resolveApproval(first, 'approved', 'owner')
+    expect((await del(id, first)).status).toBe(200)
+    const cols = Object.keys(before)
+    getDb().prepare(`INSERT INTO memories (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...cols.map((c) => before[c]))
+    expect(getMemoryById(id)!.content).toBe('restorable')
+    const again = await del(id)
+    expect(again.body.error).toBe('approval_required')
+    expect(again.body.approval_id).not.toBe(first)
+    expect(again.body.status).toBe('pending')
+    expect((await del(id, first)).body.reason).toBe('already_consumed')
+    expect(getMemoryById(id)).toBeDefined()
+  })
+
+  it('more than 500 data_delete requests on the table: a retry still finds its open request', async () => {
+    const { id } = saveAgentMemory('leanscout', 'x', 'hot')
+    const first = (await del(id)).body.approval_id
+    const insert = getDb().prepare("INSERT INTO approvals (id, agent_id, category, action_description, requested_at, content_hash) VALUES (?, 'other', 'data_delete', 'other row', ?, ?)")
+    const now = Math.floor(Date.now() / 1000)
+    for (let i = 0; i < 600; i++) insert.run(`other-${i}`, now + 1 + i, `${i}`.padStart(64, '0'))
+    const again = await del(id)
+    expect(again.body.approval_id).toBe(first)
+    expect(getDb().prepare("SELECT COUNT(*) AS n FROM approvals WHERE category = 'data_delete' AND agent_id = 'leanscout'").get()).toEqual({ n: 1 })
+  })
+
   it('level 3 keeps the old behaviour: the delete runs without an approval', async () => {
     level.value = 3
     const { id } = saveAgentMemory('leanscout', 'x', 'hot')

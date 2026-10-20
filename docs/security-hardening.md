@@ -436,6 +436,10 @@ key reads as level 1):
 - The approval is consumed once, inside the same window as an email approval
   (`EMAIL_APPROVAL_WINDOW_S`, 1800 s from the approval). An edit to the memory
   after the approval changes the anchor, and the approval no longer deletes it.
+- The anchor is the memory id plus its content version. A row deleted and later
+  restored with the same id and the same content (a DB restore, a re-import)
+  has the same anchor again; the approval that deleted it is already consumed,
+  so it cannot delete the restored row, and a fresh request is filed instead.
 
 Considered and not chosen: turning the delete into an archive (a soft delete).
 That would keep the data, but it is a different feature with its own readers

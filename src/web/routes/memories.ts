@@ -2,8 +2,8 @@ import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings, backfillNeedsWarning,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
-  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval, listApprovals,
-  type Memory, type MemoryRow,
+  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval,
+  type Memory, type MemoryRow, type Approval,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
 import { createHash } from 'crypto'
@@ -130,11 +130,17 @@ export function memoryDeleteAnchor(id: number, content: string | null | undefine
 // An open request for the same anchor (pending, or approved, unused and inside
 // the consume window) is answered again instead of filing a second one, so a
 // retrying agent does not flood the owner with requests.
-function openDeleteApproval(anchor: string) {
+// Looked up by the anchor in SQL, not by scanning a capped list: with more than
+// 500 data_delete requests on the table, a list scan missed the open one and
+// filed a duplicate (#2090 review).
+function openDeleteApproval(anchor: string): Approval | undefined {
   const freshAfter = Math.floor(Date.now() / 1000) - approvalWindowSeconds()
-  return listApprovals({ category: 'data_delete', limit: 500 }).find((a) =>
-    a.content_hash === anchor && a.consumed_at == null &&
-    (a.status === 'pending' || (a.status === 'approved' && (a.resolved_at ?? 0) >= freshAfter)))
+  return getDb().prepare(`
+    SELECT * FROM approvals
+     WHERE category = 'data_delete' AND content_hash = ? AND consumed_at IS NULL
+       AND (status = 'pending' OR (status = 'approved' AND resolved_at >= ?))
+     ORDER BY requested_at DESC LIMIT 1
+  `).get(anchor, freshAfter) as Approval | undefined
 }
 
 // The owner reads this, so the server words it from the row, not the caller.
