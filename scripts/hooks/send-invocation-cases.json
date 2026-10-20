@@ -1112,6 +1112,11 @@
       "expected": true
     },
     {
+      "name": "MAILGATEUV1020: a launcher run in front of the sender: uv run --module=send (inline value)",
+      "cmd": "uv run --module=send --to a@example.com",
+      "expected": true
+    },
+    {
       "name": "MAILGATEUV1020: a launcher run in front of the sender: uv --directory scripts/support-mail run send.py",
       "cmd": "uv --directory scripts/support-mail run send.py --to a@example.com",
       "expected": true
