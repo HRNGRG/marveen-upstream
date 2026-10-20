@@ -9,6 +9,7 @@
 //   npm run remote-enroll -- --host 203.0.113.10 --port 2222 "<public key line>"
 //   npm run remote-enroll -- --web-port 3421 "<public key line>"
 //   npm run remote-enroll -- --no-dashboard-token "<public key line>"
+//   npm run remote-enroll -- --device-key [--name "<device name>"] "<public key line>"
 //
 // --port is the SSH port; --web-port is the dashboard port the enrolled key may
 // tunnel to (permitopen) AND the port encoded in the bundle. It defaults to the
@@ -22,6 +23,13 @@
 // bundle is a SECRET: hand it over on a private channel only, never by email.
 // Pass --no-dashboard-token to emit a token-free bundle (the device user must
 // then obtain the dashboard access URL out of band).
+//
+// --device-key (BRIDGEINSTKEY1020) carries this device's OWN key instead of the
+// shared token: minted for the key line's install id, exactly as the dashboard's
+// Bridge pairing does, so the device appears in the device-key list and one
+// dashboard revoke cuts both its tunnel and its dashboard access. The remote
+// installer asks for it; without the flag the shared-token default is unchanged
+// for anyone who scripted this command.
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -34,7 +42,6 @@ import {
   buildRestrictedLine,
   buildBundle,
   checkEnrollHost,
-  dashboardTokenDecision,
   encodeBundle,
   resolveHostKey,
   HOST_KEY_PUB_CANDIDATES,
@@ -43,6 +50,9 @@ import {
   type ConnectionBundleInput,
 } from '../src/remote-enroll-core.js'
 import { enrollAuthorizedKey } from '../src/remote-enroll-fs.js'
+import { chooseBundleToken, defaultDeviceName, type BundleTokenChoice, type BundleTokenMode } from '../src/bridge-device-key.js'
+import { DEVICE_NAME_RE, mintBridgeDeviceKey } from '../src/web/auth-device-keys.js'
+import { initDatabase, logConfigChange } from '../src/db.js'
 import { resolveSshDir } from '../src/ssh-dir.js'
 import { WEB_PORT as ENV_WEB_PORT } from '../src/config.js'
 
@@ -51,7 +61,9 @@ interface Args {
   host?: string
   port: number
   webPort: number
-  includeDashboardToken: boolean
+  tokenMode: BundleTokenMode
+  /** Device-key name (--device-key only); defaults to defaultDeviceName(). */
+  name?: string
 }
 
 /** Dashboard port default: the install's actual WEB_PORT, read from the same
@@ -64,8 +76,10 @@ export function defaultWebPort(): number {
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : REMOTE_PORT
 }
 
-function parseArgs(argv: string[]): Args {
-  const out: Args = { port: 22, webPort: defaultWebPort(), includeDashboardToken: true }
+export function parseArgs(argv: string[]): Args {
+  const out: Args = { port: 22, webPort: defaultWebPort(), tokenMode: 'shared' }
+  let noToken = false
+  let deviceKey = false
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--host') {
@@ -78,7 +92,14 @@ function parseArgs(argv: string[]): Args {
       if (!checked.ok) fail(`--host: ${checked.reason}`)
       out.host = v
     } else if (a === '--no-dashboard-token') {
-      out.includeDashboardToken = false
+      noToken = true
+    } else if (a === '--device-key') {
+      deviceKey = true
+    } else if (a === '--name') {
+      const v = argv[++i]
+      if (!v) fail('--name requires a value')
+      if (!DEVICE_NAME_RE.test(v.trim())) fail('--name must be 1-64 characters: letters, digits, space, . _ -')
+      out.name = v.trim()
     } else if (a === '--port') {
       const v = argv[++i]
       if (!v) fail('--port requires a value')
@@ -99,6 +120,9 @@ function parseArgs(argv: string[]): Args {
       fail('unexpected extra argument; pass the public key line as a single quoted argument')
     }
   }
+  if (noToken && deviceKey) fail('--device-key and --no-dashboard-token are mutually exclusive')
+  if (out.name !== undefined && !deviceKey) fail('--name only applies with --device-key')
+  out.tokenMode = deviceKey ? 'device' : noToken ? 'none' : 'shared'
   return out
 }
 
@@ -166,6 +190,30 @@ function readDashboardToken(): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * The bundle's dashboard credential for this run (see chooseBundleToken).
+ * `openDb` exists for the tests: they open an in-memory database first and pass
+ * a no-op, so the device-key path is exercised end to end without ever opening
+ * the install's real store/claudeclaw.db.
+ */
+export function bundleCredential(
+  args: Pick<Args, 'tokenMode' | 'name'>,
+  installId: string,
+  action: string,
+  openDb: () => void = () => initDatabase(),
+): BundleTokenChoice {
+  const deviceName = args.name ?? defaultDeviceName(installId)
+  return chooseBundleToken(args.tokenMode, {
+    readSharedToken: readDashboardToken,
+    mintDeviceKey: () => {
+      openDb()
+      const minted = mintBridgeDeviceKey(deviceName, installId)
+      logConfigChange('security.bridge_enroll', null, `${deviceName} (${installId}) ${action} device_key_cli`, 'cli')
+      return minted
+    },
+  })
 }
 
 async function main(): Promise<void> {
@@ -242,12 +290,21 @@ async function main(): Promise<void> {
   // not running), not a silent degrade to an unusable token-free bundle. This is
   // the same "unusable -- fail hard instead of emitting it silently" rule the
   // host-key check above already applies. `--no-dashboard-token` still emits a
-  // deliberate token-free bundle.
-  const tokenDecision = dashboardTokenDecision(args.includeDashboardToken, readDashboardToken())
-  if ('ok' in tokenDecision) {
-    fail(tokenDecision.reason)
-  } else if (tokenDecision.include) {
-    bundleInput.dashboardToken = tokenDecision.token
+  // deliberate token-free bundle. `--device-key` mints this device's own key and
+  // never reads the shared token (BRIDGEINSTKEY1020). It opens the database
+  // directly, like dashboard-user does, so it works before the dashboard's
+  // first start too; the running dashboard picks the new row up on first use.
+  const choice = bundleCredential(args, parsed.installId, result.action)
+  if (!choice.ok) {
+    fail(choice.reason)
+  } else if (choice.source === 'device') {
+    bundleInput.dashboardToken = choice.token
+    process.stderr.write(
+      `device key ${choice.replaced ? 'replaced' : 'minted'} for marveen-remote:${parsed.installId}; ` +
+        'it is listed and revocable under the dashboard device keys. The bundle carries it: treat the bundle as a secret.\n',
+    )
+  } else if (choice.source === 'shared') {
+    bundleInput.dashboardToken = choice.token
     process.stderr.write(
       'NOTE: this bundle contains the dashboard access token. Treat it as a secret: ' +
         'hand it over on a private channel, never by email or shared chat. ' +
