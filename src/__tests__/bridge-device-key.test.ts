@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -28,6 +28,7 @@ import {
   chooseBundleToken,
   checkDeviceKeyRequest,
   defaultDeviceName,
+  withCredential,
   DEVICE_KEY_BEGIN,
   DEVICE_KEY_END,
 } from '../bridge-device-key.js'
@@ -39,14 +40,18 @@ import {
   revokeDeviceKey,
   _clearDeviceKeyCacheForTest,
 } from '../web/auth-device-keys.js'
-import { buildRestrictedLine, validatePublicKeyLine } from '../remote-enroll-core.js'
+import { buildRestrictedLine, decodeBundle, validatePublicKeyLine } from '../remote-enroll-core.js'
 import type { BundleTokenChoice, BundleTokenMode } from '../bridge-device-key.js'
 
 // The CLIs live in scripts/, outside tsconfig's rootDir, so they are loaded
 // dynamically (a static import would pull them into `npm run build`), the same
 // way enroll-port-follows-web-port.test.ts reaches remote-access-enroll.ts.
 interface EnrollCli {
-  parseArgs: (argv: string[]) => { tokenMode: BundleTokenMode; name?: string }
+  parseArgs: (argv: string[]) => { tokenMode: BundleTokenMode; name?: string; keyLine?: string }
+  runEnroll: (
+    args: ReturnType<EnrollCli['parseArgs']>,
+    deps: { sshDir: string; obtainHostKey: () => { body: string; source: string } | null; openDb?: () => void },
+  ) => Promise<{ ok: true; encoded: string } | { ok: false; reason: string }>
   bundleCredential: (
     args: { tokenMode: BundleTokenMode; name?: string },
     installId: string,
@@ -65,6 +70,7 @@ interface IssueCli {
 const ROOT = join(__dirname, '..', '..')
 let parseEnrollArgs: EnrollCli['parseArgs']
 let bundleCredential: EnrollCli['bundleCredential']
+let runEnroll: EnrollCli['runEnroll']
 let parseIssueArgs: IssueCli['parseArgs']
 let issueDeviceKey: IssueCli['issueDeviceKey']
 const TSX = join(ROOT, 'node_modules', '.bin', 'tsx')
@@ -97,6 +103,7 @@ beforeAll(async () => {
   const issue = (await import(join(ROOT, 'scripts', 'bridge-device-key.ts'))) as IssueCli
   parseEnrollArgs = enroll.parseArgs
   bundleCredential = enroll.bundleCredential
+  runEnroll = enroll.runEnroll
   parseIssueArgs = issue.parseArgs
   issueDeviceKey = issue.issueDeviceKey
 })
@@ -192,6 +199,59 @@ describe('remote-enroll --device-key: the bundle carries the device key, not the
       expect(status).toBe(1)
       expect(stderr).toContain(msg)
     }
+  })
+})
+
+const HOST_KEY_B64 = Buffer.concat([
+  Buffer.from([0, 0, 0, 11]), Buffer.from('ssh-ed25519', 'utf8'),
+  Buffer.from([0, 0, 0, 32]), randomBytes(32),
+]).toString('base64')
+
+describe('remote-enroll end to end: the bundle that leaves the CLI carries the right credential', () => {
+  // Dani's review mutant on #2083: `readDashboardToken() ?? choice.token` at the
+  // step that writes the choice into the bundle stayed green while the real CLI
+  // shipped the SHARED token with --device-key. runEnroll is that real chain
+  // (authorized_keys write, host key, choice, bundle); only argv and stdout stay
+  // in main(). DASHBOARD_TOKEN is set (beforeEach), so any shared-token leak
+  // into a --device-key bundle is visible here.
+  let sshDir: string
+  beforeEach(() => { sshDir = mkdtempSync(join(tmpdir(), 'bik-enroll-ssh-')) })
+  afterEach(() => { rmSync(sshDir, { recursive: true, force: true }) })
+  const deps = () => ({ sshDir, obtainHostKey: () => ({ body: HOST_KEY_B64, source: 'test' }), openDb: noDb })
+
+  it('--device-key: the decoded bundle holds the minted device key, never the shared token', async () => {
+    const { line, installId } = keyLine()
+    const out = await runEnroll(parseEnrollArgs(['--device-key', '--name', 'Nova MacBook', line]), deps())
+    if (!out.ok) throw new Error(out.reason)
+    const token = decodeBundle(out.encoded).dashboardToken
+    expect(token).toBeDefined()
+    expect(token).not.toBe(SHARED)
+    const row = findDeviceKeyByInstallId(installId)
+    expect(row).toMatchObject({ name: 'Nova MacBook', installId })
+    expect(resolveDeviceKey(token!)).toMatchObject({ id: row!.id })
+    expect(readFileSync(join(sshDir, 'authorized_keys'), 'utf8')).toContain(`marveen-remote:${installId}`)
+  })
+
+  it('without the flag the bundle still carries the shared token, and nothing is minted', async () => {
+    const { line, installId } = keyLine()
+    const out = await runEnroll(parseEnrollArgs([line]), deps())
+    if (!out.ok) throw new Error(out.reason)
+    expect(decodeBundle(out.encoded).dashboardToken).toBe(SHARED)
+    expect(findDeviceKeyByInstallId(installId)).toBeNull()
+  })
+
+  it('--no-dashboard-token: no credential in the bundle', async () => {
+    const { line } = keyLine()
+    const out = await runEnroll(parseEnrollArgs(['--no-dashboard-token', line]), deps())
+    if (!out.ok) throw new Error(out.reason)
+    expect(decodeBundle(out.encoded).dashboardToken).toBeUndefined()
+  })
+
+  it('withCredential writes exactly the chosen token and drops any stale one', () => {
+    const base = { host: 'h', dashboardToken: SHARED }
+    expect(withCredential(base, { ok: true, source: 'device', token: 'mvk_x', deviceKeyId: 1, replaced: false }).dashboardToken).toBe('mvk_x')
+    expect(withCredential(base, { ok: true, source: 'shared', token: 'tok' }).dashboardToken).toBe('tok')
+    expect('dashboardToken' in withCredential(base, { ok: true, source: 'none' })).toBe(false)
   })
 })
 

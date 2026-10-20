@@ -50,13 +50,13 @@ import {
   type ConnectionBundleInput,
 } from '../src/remote-enroll-core.js'
 import { enrollAuthorizedKey } from '../src/remote-enroll-fs.js'
-import { chooseBundleToken, defaultDeviceName, type BundleTokenChoice, type BundleTokenMode } from '../src/bridge-device-key.js'
+import { chooseBundleToken, defaultDeviceName, withCredential, type BundleTokenChoice, type BundleTokenMode } from '../src/bridge-device-key.js'
 import { DEVICE_NAME_RE, mintBridgeDeviceKey } from '../src/web/auth-device-keys.js'
 import { initDatabase, logConfigChange } from '../src/db.js'
 import { resolveSshDir } from '../src/ssh-dir.js'
 import { WEB_PORT as ENV_WEB_PORT } from '../src/config.js'
 
-interface Args {
+export interface Args {
   keyLine?: string
   host?: string
   port: number
@@ -216,42 +216,52 @@ export function bundleCredential(
   })
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2))
+export interface EnrollDeps {
+  /** .ssh directory the restricted line is written into. */
+  sshDir: string
+  /** This machine's ed25519 host key, or null when none can be found. */
+  obtainHostKey: () => { body: string; source: string } | null
+  /** Opens the install database for --device-key (tests pass a no-op after ':memory:'). */
+  openDb?: () => void
+  /** Diagnostics sink (stderr in the CLI). */
+  note?: (line: string) => void
+}
+
+export type EnrollOutcome = { ok: true; encoded: string } | { ok: false; reason: string }
+
+/**
+ * One enrollment, end to end except argv and stdout: write the restricted
+ * authorized_keys line, resolve the host key, pick the credential and build the
+ * encoded bundle. Exported so the tests run the REAL chain -- including the step
+ * that puts the chosen credential into the bundle, which a review mutant
+ * (`readDashboardToken() ?? choice.token`) showed was otherwise unpinned.
+ */
+export async function runEnroll(args: Args, deps: EnrollDeps): Promise<EnrollOutcome> {
+  const note = deps.note ?? (() => {})
   if (args.keyLine === undefined) {
-    fail('missing public key line. Usage: npm run remote-enroll -- "<public key line>"')
+    return { ok: false, reason: 'missing public key line. Usage: npm run remote-enroll -- "<public key line>"' }
   }
 
   let parsed
   try {
     parsed = validatePublicKeyLine(args.keyLine)
   } catch (err) {
-    if (err instanceof RemoteEnrollError) fail(err.message)
+    if (err instanceof RemoteEnrollError) return { ok: false, reason: err.message }
     throw err
   }
 
   const restrictedLine = buildRestrictedLine(parsed, args.webPort)
-  // ENROLL813: this CLI used to hardcode homedir()/.ssh and did not know the
-  // MARVEEN_SSH_DIR seam at all (grep -c MARVEEN_SSH_DIR on this file was 0).
-  // Nothing automated calls it today -- but any future automated caller would
-  // have written the operator's real authorized_keys with no way to redirect it,
-  // which is the same shape as the leak this change closes. One resolver for
-  // every writer, or the next copy drifts again.
-  const sshDir = resolveSshDir((dir) => {
-    process.stderr.write(`warning: MARVEEN_SSH_DIR override active -- writing to ${dir}, not the real ~/.ssh\n`)
-  })
-
   const result = await enrollAuthorizedKey({
-    sshDir,
+    sshDir: deps.sshDir,
     restrictedLine,
     installId: parsed.installId,
   })
 
   for (const w of result.warnings) {
-    process.stderr.write(`warning: ${w}\n`)
+    note(`warning: ${w}`)
   }
-  process.stderr.write(
-    `${result.action === 'replaced' ? 'Replaced' : 'Added'} restricted entry for marveen-remote:${parsed.installId} in ${result.authorizedKeysPath}\n`,
+  note(
+    `${result.action === 'replaced' ? 'Replaced' : 'Added'} restricted entry for marveen-remote:${parsed.installId} in ${result.authorizedKeysPath}`,
   )
 
   // Assemble the connection bundle. The consuming side requires the host key,
@@ -260,19 +270,19 @@ async function main(): Promise<void> {
   // own and stays; re-running after fixing the SSH server replaces it by id.)
   const explicitHost = args.host
   const host = explicitHost ?? primaryIPv4() ?? hostname()
-  const resolved = obtainHostKey()
+  const resolved = deps.obtainHostKey()
   if (resolved === null) {
-    fail(
-      'could not obtain this machine\'s ssh-ed25519 host key ' +
+    return {
+      ok: false,
+      reason:
+        'could not obtain this machine\'s ssh-ed25519 host key ' +
         `(checked ${HOST_KEY_PUB_CANDIDATES.join(', ')} and ssh-keyscan on 127.0.0.1). ` +
         'Ensure the SSH server is running (on macOS: System Settings > General > Sharing > Remote Login), then re-run.',
-    )
+    }
   }
-  process.stderr.write(`host key: ${resolved.source}\n`)
+  note(`host key: ${resolved.source}`)
   if (!explicitHost) {
-    process.stderr.write(
-      `hint: host resolved to "${host}". Verify this is the address the device will reach; override with --host if needed.\n`,
-    )
+    note(`hint: host resolved to "${host}". Verify this is the address the device will reach; override with --host if needed.`)
   }
 
   const bundleInput: ConnectionBundleInput = {
@@ -294,28 +304,44 @@ async function main(): Promise<void> {
   // never reads the shared token (BRIDGEINSTKEY1020). It opens the database
   // directly, like dashboard-user does, so it works before the dashboard's
   // first start too; the running dashboard picks the new row up on first use.
-  const choice = bundleCredential(args, parsed.installId, result.action)
-  if (!choice.ok) {
-    fail(choice.reason)
-  } else if (choice.source === 'device') {
-    bundleInput.dashboardToken = choice.token
-    process.stderr.write(
+  const choice = bundleCredential(args, parsed.installId, result.action, deps.openDb)
+  if (!choice.ok) return { ok: false, reason: choice.reason }
+  if (choice.source === 'device') {
+    note(
       `device key ${choice.replaced ? 'replaced' : 'minted'} for marveen-remote:${parsed.installId}; ` +
-        'it is listed and revocable under the dashboard device keys. The bundle carries it: treat the bundle as a secret.\n',
+        'it is listed and revocable under the dashboard device keys. The bundle carries it: treat the bundle as a secret.',
     )
   } else if (choice.source === 'shared') {
-    bundleInput.dashboardToken = choice.token
-    process.stderr.write(
+    note(
       'NOTE: this bundle contains the dashboard access token. Treat it as a secret: ' +
         'hand it over on a private channel, never by email or shared chat. ' +
-        'Use --no-dashboard-token to emit a token-free bundle.\n',
+        'Use --no-dashboard-token to emit a token-free bundle.',
     )
   }
 
-  const encoded = encodeBundle(buildBundle(bundleInput))
+  return { ok: true, encoded: encodeBundle(buildBundle(withCredential(bundleInput, choice))) }
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2))
+  // ENROLL813: this CLI used to hardcode homedir()/.ssh and did not know the
+  // MARVEEN_SSH_DIR seam at all (grep -c MARVEEN_SSH_DIR on this file was 0).
+  // Nothing automated calls it today -- but any future automated caller would
+  // have written the operator's real authorized_keys with no way to redirect it,
+  // which is the same shape as the leak this change closes. One resolver for
+  // every writer, or the next copy drifts again.
+  const sshDir = resolveSshDir((dir) => {
+    process.stderr.write(`warning: MARVEEN_SSH_DIR override active -- writing to ${dir}, not the real ~/.ssh\n`)
+  })
+  const outcome = await runEnroll(args, {
+    sshDir,
+    obtainHostKey,
+    note: (line) => process.stderr.write(`${line}\n`),
+  })
+  if (!outcome.ok) fail(outcome.reason)
 
   process.stdout.write('----- BEGIN CONNECTION BUNDLE -----\n')
-  process.stdout.write(`${encoded}\n`)
+  process.stdout.write(`${outcome.encoded}\n`)
   process.stdout.write('----- END CONNECTION BUNDLE -----\n')
 }
 

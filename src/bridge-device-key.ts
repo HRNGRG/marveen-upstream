@@ -59,6 +59,19 @@ export function chooseBundleToken(mode: BundleTokenMode, deps: BundleTokenDeps):
   return { ok: true, source: 'shared', token: decision.token }
 }
 
+/**
+ * Put the chosen credential into the bundle input: exactly the chosen token,
+ * nothing else. Pure, and deliberately without access to the shared token --
+ * a device choice can only ever carry the device key.
+ */
+export function withCredential<T extends { dashboardToken?: string }>(input: T, choice: BundleTokenChoice): T {
+  const { dashboardToken: _drop, ...rest } = input
+  if (choice.ok && (choice.source === 'device' || choice.source === 'shared')) {
+    return { ...rest, dashboardToken: choice.token } as T
+  }
+  return rest as T
+}
+
 /** Default device-key name for an installer-paired Bridge. */
 export function defaultDeviceName(installId: string): string {
   return `Bridge ${installId.slice(0, 8)}`
