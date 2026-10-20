@@ -9,7 +9,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import {
-  approvePending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, rejectPending, targetRoot,
+  approvePending, getPending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, rejectPending, targetRoot,
   type SkillTarget,
 } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
@@ -253,6 +253,14 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   // report and hash; approve takes the hash the approver was shown.
   if (path === '/api/skills/pending' && method === 'GET') {
     json(res, listPending())
+    return true
+  }
+  const pendingDetailMatch = path.match(/^\/api\/skills\/pending\/([^/]+)$/)
+  if (pendingDetailMatch && method === 'GET') {
+    let p
+    try { p = getPending(decodeURIComponent(pendingDetailMatch[1])) } catch { p = null }
+    if (!p) { json(res, { error: 'Pending skill not found' }, 404); return true }
+    json(res, p)
     return true
   }
   const pendingActionMatch = path.match(/^\/api\/skills\/pending\/([^/]+)\/(approve|reject)$/)

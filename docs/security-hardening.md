@@ -422,6 +422,7 @@ the delete what it is and puts the decision where the config says it belongs.
 **Limit:** the approval can be resolved by any holder of the shared dashboard
 token, as every approval can today, so an agent could approve its own request.
 "Only a human may delete" needs the per-agent identity decision (#1985) first.
+
 # New skills wait for approval (skill quarantine)
 
 A skill is an instruction set, and the global root `~/.claude/skills` is loaded
@@ -440,8 +441,12 @@ Now all four write into `store/skills-pending/<id>/`, outside every skill root,
 so a pending skill is inert: no agent loads it. It goes live only when it is
 approved on the dashboard's Skills page, which shows first:
 
-- every file, with its size, its kind (markdown, script, binary) and whether it
-  is executable;
+- where it will land, named plainly: global means the whole fleet loads it
+  (a skill queued for the main agent is global, because its root is the global
+  one);
+- every file IN FULL: the text of every non-binary file, the size and sha256 of
+  every file (a binary by those two only), and whether it is executable, with
+  scripts, binaries and executables listed first;
 - the scan findings: invisible Unicode (zero-width and tag characters), forged
   security envelopes and directive headers, instruction overrides, credential
   targets, exfil and pipe-to-shell shapes, decode-and-run, shell exec,
@@ -449,9 +454,12 @@ approved on the dashboard's Skills page, which shows first:
   hooks and long encoded blobs;
 - the `SKILL.md` text.
 
-The approval is bound to the hash of that content: a file added, removed or
-changed after the listing makes the approval fail (409), and a symlink planted
-into the pending skill blocks it.
+The approval is bound to the hash of that content and of the name and target
+shown (`meta.json` is inside the hash): a file added, removed or changed, or the
+target edited, after the listing makes the approval fail (409), and a symlink
+planted into the pending skill blocks it. A skill over the review bounds (300
+files or 8 MiB) cannot be shown in full, so it cannot be approved from the
+dashboard.
 
 **The scan is a triage list, not a verdict.** No text filter is a security
 boundary for prompt injection (see the SKILLSCAN824 research). An empty findings
@@ -464,7 +472,8 @@ load-bearing control is that nothing goes live without the approval.
   run as one OS user, and the self-learning instructions tell them to do this.
 - The fleet import, the agent-bundle import and the `skill` CLI, which have
   their own paths.
-- Editing a live skill's `SKILL.md` through `PUT /api/skills/:name`.
+- Editing a live skill's `SKILL.md` through `PUT /api/skills/:name` (a follow-up
+  PR puts it through the same queue).
 - Who approves. The approve route takes the same credentials as every other
   dashboard write, and with the one shared dashboard token an agent can call it
   too. "Only a human approves" needs the per-agent identity decision (#1985)

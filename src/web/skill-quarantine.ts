@@ -68,6 +68,11 @@ export interface ScanFile {
   kind: 'markdown' | 'script' | 'binary' | 'other'
   executable: boolean
   shebang?: string
+  sha256: string
+  // The FULL text of a non-binary file (#2088 review: the approver sees every
+  // byte the hash binds). Absent for a binary file, which is shown by size
+  // and sha256 only, and in the summary listing.
+  text?: string
 }
 
 export interface ScanFinding {
@@ -89,14 +94,15 @@ export interface ScanReport {
 export interface PendingSkill extends PendingMeta {
   hash: string
   report: ScanReport
-  skillMd: string | null
+  // false when the scan bounds stopped it: such a skill cannot be shown in
+  // full, so it cannot be approved here.
+  approvable: boolean
 }
 
 export const SKILL_PENDING_DIRNAME = 'skills-pending'
 const MAX_FILES = 300
 const MAX_BYTES = 8 * 1024 * 1024
 const MAX_FINDINGS = 200
-const SKILL_MD_PREVIEW_CHARS = 60_000
 
 export function pendingRoot(): string {
   return join(STORE_DIR, SKILL_PENDING_DIRNAME)
@@ -108,6 +114,13 @@ export function globalSkillsRoot(): string {
 
 // The live root a target resolves to. The main agent's own root IS the
 // global one (agents-skills.ts skillsRootFor).
+// The main agent's own root IS the global one, so a skill queued for it is
+// queued as global, and the approver sees "global" (#2088 review: it showed as
+// "Agent: <main>" and then went into the root the whole fleet loads).
+export function normalizeTarget(target: SkillTarget): SkillTarget {
+  return target.scope === 'agent' && target.agent === MAIN_AGENT_ID ? { scope: 'global' } : target
+}
+
 export function targetRoot(target: SkillTarget): string {
   if (target.scope === 'global' || target.agent === MAIN_AGENT_ID) return globalSkillsRoot()
   return join(agentDir(target.agent), '.claude', 'skills')
@@ -144,6 +157,7 @@ function listIds(): string[] {
 // Why a name cannot be queued for a target: a live skill of that name, or a
 // pending one waiting for the same target. null = free.
 export function nameConflict(target: SkillTarget, name: string): 'live' | 'pending' | null {
+  target = normalizeTarget(target)
   if (existsSync(join(targetRoot(target), name))) return 'live'
   for (const id of listIds()) {
     const m = readMeta(id)
@@ -157,7 +171,8 @@ function writeMeta(dir: string, meta: PendingMeta): void {
 }
 
 // A generated skill: one SKILL.md.
-export function queueGeneratedSkill(target: SkillTarget, name: string, skillMd: string): PendingMeta {
+export function queueGeneratedSkill(targetIn: SkillTarget, name: string, skillMd: string): PendingMeta {
+  const target = normalizeTarget(targetIn)
   const id = newId(name)
   const dir = entryDir(id)
   mkdirSync(join(dir, 'skill'), { recursive: true })
@@ -169,7 +184,8 @@ export function queueGeneratedSkill(target: SkillTarget, name: string, skillMd: 
 
 // An imported skill directory (already extracted and checked by the caller):
 // moved, not copied, so nothing of it stays outside the pending area.
-export function queueImportedSkillDir(target: SkillTarget, name: string, srcDir: string): PendingMeta {
+export function queueImportedSkillDir(targetIn: SkillTarget, name: string, srcDir: string): PendingMeta {
+  const target = normalizeTarget(targetIn)
   const id = newId(name)
   const dir = entryDir(id)
   mkdirSync(dir, { recursive: true })
@@ -221,12 +237,16 @@ function hasSymlink(root: string): boolean {
   return rec(root)
 }
 
-// The hash an approval is bound to: every file's relative path and bytes,
-// length-framed, in sorted order. A file added, removed or changed after the
-// approver looked changes it, and the approval no longer applies.
-export function skillDirHash(root: string): string {
+// The hash an approval is bound to: the name, target and source the approver
+// was shown (meta.json, #2088 review), then every file's relative path and
+// bytes, length-framed, in sorted order. A file added, removed or changed, or
+// the target or name edited after the approver looked, changes it, and the
+// approval no longer applies.
+export function skillDirHash(root: string, meta?: Pick<PendingMeta, 'name' | 'target' | 'source'>): string {
   const h = createHash('sha256')
-  h.update('marveen-pending-skill-v1\n')
+  h.update('marveen-pending-skill-v2\n')
+  const metaJson = JSON.stringify(meta ? { name: meta.name, target: meta.target, source: meta.source } : null)
+  h.update(`meta\0${Buffer.byteLength(metaJson)}\0${metaJson}`)
   for (const rel of filesUnder(root)) {
     let buf: Buffer
     try { buf = readFileSync(join(root, rel)) } catch { buf = Buffer.from('') }
@@ -282,7 +302,7 @@ export function scanSkillDir(root: string): ScanReport {
     const executable = (st.mode & 0o111) !== 0
     if (totalBytes > MAX_BYTES) {
       truncated = true
-      files.push({ path: rel, size: st.size, kind: 'other', executable })
+      files.push({ path: rel, size: st.size, kind: 'other', executable, sha256: '' })
       break
     }
     let buf: Buffer
@@ -295,7 +315,8 @@ export function scanSkillDir(root: string): ScanReport {
     const kind: ScanFile['kind'] = isBinary ? 'binary'
       : (SCRIPT_EXT.has(ext) || shebang) ? 'script'
       : MARKDOWN_EXT.has(ext) ? 'markdown' : 'other'
-    files.push({ path: rel, size: st.size, kind, executable, ...(shebang ? { shebang } : {}) })
+    const sha256 = createHash('sha256').update(buf).digest('hex')
+    files.push({ path: rel, size: st.size, kind, executable, ...(shebang ? { shebang } : {}), sha256, ...(isBinary ? {} : { text }) })
     if (isBinary) continue
     const lines = text.split('\n')
     for (let i = 0; i < lines.length && findings.length < MAX_FINDINGS; i++) {
@@ -313,19 +334,22 @@ export function scanSkillDir(root: string): ScanReport {
   return { files, findings, totalBytes, truncated }
 }
 
+// One pending skill with the FULL text of every non-binary file: what the
+// approver reads before the button (GET /api/skills/pending/:id).
 export function getPending(id: string): PendingSkill | null {
   const meta = readMeta(id)
   if (!meta) return null
   const skillRoot = join(entryDir(id), 'skill')
-  let skillMd: string | null = null
-  try { skillMd = readFileSync(join(skillRoot, 'SKILL.md'), 'utf-8').slice(0, SKILL_MD_PREVIEW_CHARS) } catch { /* none at the top */ }
-  return { ...meta, hash: skillDirHash(skillRoot), report: scanSkillDir(skillRoot), skillMd }
+  const report = scanSkillDir(skillRoot)
+  return { ...meta, hash: skillDirHash(skillRoot, meta), report, approvable: !report.truncated }
 }
 
+// The queue, without file texts (GET /api/skills/pending).
 export function listPending(): PendingSkill[] {
   return listIds()
     .map((id) => getPending(id))
     .filter((p): p is PendingSkill => p !== null)
+    .map((p) => ({ ...p, report: { ...p.report, files: p.report.files.map(({ text: _t, ...f }) => f) } }))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
@@ -340,9 +364,13 @@ export function approvePending(id: string, hash: unknown): ApproveResult {
   try { meta = readMeta(id) } catch { meta = null }
   if (!meta) return { ok: false, status: 404, error: 'Pending skill not found' }
   const skillRoot = join(entryDir(id), 'skill')
-  const current = skillDirHash(skillRoot)
+  const current = skillDirHash(skillRoot, meta)
   if (typeof hash !== 'string' || hash !== current) {
     return { ok: false, status: 409, error: 'The pending skill changed since it was shown (hash mismatch); reload and review it again' }
+  }
+  // What could not be shown in full cannot be approved from the dashboard.
+  if (scanSkillDir(skillRoot).truncated) {
+    return { ok: false, status: 409, error: 'The pending skill is over the review bounds and cannot be shown in full; it cannot be approved here' }
   }
   // A link planted into the pending dir after the scan would go live with it.
   if (hasSymlink(skillRoot)) return { ok: false, status: 400, error: 'The pending skill contains a symlink; it cannot be approved' }
