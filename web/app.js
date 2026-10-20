@@ -6497,8 +6497,9 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
       const err = await res.json()
       throw new Error(err.error || 'Hiba')
     }
+    const created = await res.json().catch(() => ({}))
     closeModal(skillModalOverlay)
-    showToast(t('skills.toast.added'))
+    showToast(created.pending ? t('skills.toast.queued') : t('skills.toast.added'))
     if (isGlobal) {
       loadGlobalSkills()
     } else {
@@ -6541,7 +6542,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     const result = await res.json()
     closeModal(skillModalOverlay)
     const importedList = Array.isArray(result.imported) ? result.imported : []
-    showToast(t('skills.toast.imported', { list: importedList.join(', ') }))
+    showToast(t(result.pending ? 'skills.toast.imported_queued' : 'skills.toast.imported', { list: importedList.join(', ') }))
     skillFile = null
     document.getElementById('skillFileName').textContent = ''
     if (isGlobal) {
@@ -11682,9 +11683,124 @@ async function loadGlobalSkills() {
     globalSkills = await globalRes.json()
     localAgentSkills = localRes.ok ? await localRes.json() : []
     renderGlobalSkills()
+    loadPendingSkills()
   } catch (err) {
     console.error('Skills betoltes hiba:', err)
     skillsGrid.innerHTML = `<div class="connector-loading">${t('skills.error')}</div>`
+  }
+}
+
+// MARVEENGAPS1020 (b): skills waiting for approval. A generated or imported
+// skill is not live until it is approved here; the approver sees every file,
+// the scan's findings and the SKILL.md text first, and the approval is bound
+// to the hash of exactly that content. Everything below is built with
+// textContent: the skill's own text is untrusted data, never markup.
+async function loadPendingSkills() {
+  const box = document.getElementById('skillsPending')
+  if (!box) return
+  let list = []
+  try {
+    const res = await fetch('/api/skills/pending')
+    list = res.ok ? await res.json() : []
+  } catch { list = [] }
+  renderPendingSkills(box, Array.isArray(list) ? list : [])
+}
+
+function pendingEl(tag, cls, text) {
+  const el = document.createElement(tag)
+  if (cls) el.className = cls
+  if (text != null) el.textContent = String(text)
+  return el
+}
+
+function renderPendingSkills(box, list) {
+  box.replaceChildren()
+  if (!list.length) { box.hidden = true; return }
+  box.hidden = false
+  box.appendChild(pendingEl('h2', 'skills-pending-title', t('skills.pending.title', { n: list.length })))
+  box.appendChild(pendingEl('p', 'skills-pending-intro', t('skills.pending.intro')))
+  for (const p of list) {
+    const card = pendingEl('div', 'skills-pending-card')
+    const head = pendingEl('div', 'skills-pending-head')
+    head.appendChild(pendingEl('strong', null, p.name))
+    const where = p.target && p.target.scope === 'agent'
+      ? t('skills.pending.target_agent', { agent: p.target.agent })
+      : t('skills.pending.target_global')
+    const src = p.source === 'import' ? t('skills.pending.source_import') : t('skills.pending.source_generate')
+    head.appendChild(pendingEl('span', 'skills-pending-meta', `${where} · ${src} · ${new Date(p.createdAt).toLocaleString()}`))
+    card.appendChild(head)
+
+    const report = p.report || { files: [], findings: [], truncated: false }
+    card.appendChild(pendingEl('div', 'skills-pending-sub', t('skills.pending.files', { n: report.files.length })))
+    const files = pendingEl('ul', 'skills-pending-files')
+    for (const f of report.files) {
+      const flags = [f.kind]
+      if (f.executable) flags.push(t('skills.pending.executable'))
+      if (f.shebang) flags.push(f.shebang)
+      const li = pendingEl('li', f.kind === 'script' || f.kind === 'binary' || f.executable ? 'is-flagged' : null)
+      li.appendChild(pendingEl('code', null, f.path))
+      li.appendChild(pendingEl('span', null, ` ${f.size} B · ${flags.join(' · ')}`))
+      files.appendChild(li)
+    }
+    card.appendChild(files)
+
+    card.appendChild(pendingEl('div', 'skills-pending-sub',
+      report.findings.length ? t('skills.pending.findings', { n: report.findings.length }) : t('skills.pending.no_findings')))
+    if (report.findings.length) {
+      const fl = pendingEl('ul', 'skills-pending-findings')
+      for (const f of report.findings) {
+        const li = pendingEl('li')
+        li.appendChild(pendingEl('span', 'skills-pending-pattern', f.pattern))
+        li.appendChild(pendingEl('code', null, `${f.file}:${f.line}`))
+        li.appendChild(pendingEl('span', 'skills-pending-excerpt', f.excerpt))
+        fl.appendChild(li)
+      }
+      card.appendChild(fl)
+    }
+    if (report.truncated) card.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.truncated')))
+
+    if (p.skillMd != null) {
+      const det = pendingEl('details', 'skills-pending-md')
+      det.appendChild(pendingEl('summary', null, 'SKILL.md'))
+      det.appendChild(pendingEl('pre', null, p.skillMd))
+      card.appendChild(det)
+    }
+
+    const actions = pendingEl('div', 'skills-pending-actions')
+    const approve = pendingEl('button', 'btn-primary btn-compact', t('skills.pending.approve'))
+    const reject = pendingEl('button', 'btn-danger btn-compact', t('skills.pending.reject'))
+    approve.addEventListener('click', async () => {
+      if (!confirm(t('skills.pending.confirm_approve', { name: p.name }))) return
+      approve.disabled = true
+      try {
+        const res = await fetch(`/api/skills/pending/${encodeURIComponent(p.id)}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hash: p.hash }),
+        })
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(body.error || String(res.status))
+        showToast(t('skills.pending.approved', { name: p.name }))
+        loadGlobalSkills()
+      } catch (err) {
+        showToast(`${t('skills.pending.error')}: ${err.message}`)
+        loadPendingSkills()
+      } finally { approve.disabled = false }
+    })
+    reject.addEventListener('click', async () => {
+      if (!confirm(t('skills.pending.confirm_reject', { name: p.name }))) return
+      reject.disabled = true
+      try {
+        const res = await fetch(`/api/skills/pending/${encodeURIComponent(p.id)}/reject`, { method: 'POST' })
+        if (!res.ok) throw new Error(String(res.status))
+        showToast(t('skills.pending.rejected', { name: p.name }))
+      } catch (err) {
+        showToast(`${t('skills.pending.error')}: ${err.message}`)
+      } finally { reject.disabled = false; loadPendingSkills() }
+    })
+    actions.append(approve, reject)
+    card.appendChild(actions)
+    box.appendChild(card)
   }
 }
 

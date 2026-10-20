@@ -422,3 +422,50 @@ the delete what it is and puts the decision where the config says it belongs.
 **Limit:** the approval can be resolved by any holder of the shared dashboard
 token, as every approval can today, so an agent could approve its own request.
 "Only a human may delete" needs the per-agent identity decision (#1985) first.
+# New skills wait for approval (skill quarantine)
+
+A skill is an instruction set, and the global root `~/.claude/skills` is loaded
+by every agent of the fleet. Four dashboard routes bring new skill content in:
+
+- `POST /api/skills` (an LLM-generated `SKILL.md`, global);
+- `POST /api/skills/import` (an uploaded `.skill` / zip archive, global);
+- `POST /api/agents/:name/skills` and `POST /api/agents/:name/skills/import`
+  (the same, for one agent's own root).
+
+Until this change all four made the content live at once. The import checked
+only the structure (path traversal, a name clash, symlinks, a `SKILL.md`
+somewhere), never the text or the scripts shipped with it.
+
+Now all four write into `store/skills-pending/<id>/`, outside every skill root,
+so a pending skill is inert: no agent loads it. It goes live only when it is
+approved on the dashboard's Skills page, which shows first:
+
+- every file, with its size, its kind (markdown, script, binary) and whether it
+  is executable;
+- the scan findings: invisible Unicode (zero-width and tag characters), forged
+  security envelopes and directive headers, instruction overrides, credential
+  targets, exfil and pipe-to-shell shapes, decode-and-run, shell exec,
+  persistence targets (settings, scheduled tasks, shell rc files), install
+  hooks and long encoded blobs;
+- the `SKILL.md` text.
+
+The approval is bound to the hash of that content: a file added, removed or
+changed after the listing makes the approval fail (409), and a symlink planted
+into the pending skill blocks it.
+
+**The scan is a triage list, not a verdict.** No text filter is a security
+boundary for prompt injection (see the SKILLSCAN824 research). An empty findings
+list means the filter found no known shape, not that the skill is safe. The
+load-bearing control is that nothing goes live without the approval.
+
+**Not covered, stated out loud:**
+
+- An agent writing a skill directory directly with its file tools. All agents
+  run as one OS user, and the self-learning instructions tell them to do this.
+- The fleet import, the agent-bundle import and the `skill` CLI, which have
+  their own paths.
+- Editing a live skill's `SKILL.md` through `PUT /api/skills/:name`.
+- Who approves. The approve route takes the same credentials as every other
+  dashboard write, and with the one shared dashboard token an agent can call it
+  too. "Only a human approves" needs the per-agent identity decision (#1985)
+  first.

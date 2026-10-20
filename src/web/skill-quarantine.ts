@@ -1,0 +1,433 @@
+// Skill quarantine (MARVEENGAPS1020 (b)).
+//
+// A skill is an instruction set that every agent loading it follows, and the
+// global root (~/.claude/skills) is loaded by EVERY agent of the fleet. Until
+// this module, the two API routes that bring new skill content in went live
+// on the spot: POST /api/skills wrote an LLM-generated SKILL.md straight into
+// the global root, and POST /api/skills/import unzipped an uploaded archive
+// there after structural checks only (path traversal, name clash, symlinks,
+// a SKILL.md somewhere). The text, and any script shipped next to it, was never
+// looked at. The per-agent twins (/api/agents/:name/skills and .../import) did
+// the same into an agent's own root.
+//
+// Now all four write into a PENDING area outside every skill root:
+// <store>/skills-pending/<id>/{meta.json, skill/}. Nothing there is loaded by
+// Claude Code (store/ is not a skill root, and no agent's config points at it),
+// so a pending skill is inert data. It becomes live only through
+// approvePending(), which the dashboard calls after showing the approver the
+// full file list and the scan report below, bound to the hash of exactly the
+// content that was shown.
+//
+// What the scan is, and what it is not (Jumanji's SKILLSCAN824 research): no
+// text classifier is a security boundary for prompt injection; the published
+// evaluations defeat the best of them almost completely. The scan is a TRIAGE
+// list for the human in front of the approve button, never an auto-verdict:
+// it lists every file (script, binary, executable bit), invisible Unicode
+// (zero-width and tag characters a reader cannot see but the model reads), and
+// the injection shapes the browser-content hook already names
+// (scripts/hooks/browser-content-notice.py), plus a few install/exec shapes
+// that a skill has no business carrying. An empty list does not mean safe.
+// The load-bearing control is that nothing goes live without that approval.
+//
+// Not covered here (stated, not hidden):
+//   - an agent writing a skill directory directly with its file tools (the
+//     same OS user; the fleet's self-learning instructions do exactly that);
+//   - the fleet import, the agent-bundle import and the `skill` CLI, which
+//     have their own paths;
+//   - editing a LIVE skill's SKILL.md through PUT /api/skills/:name;
+//   - who approves: the approve route accepts the same credentials as every
+//     other dashboard write. With the one shared dashboard token an agent can
+//     call it too; "only a human approves" needs the per-agent identity
+//     decision (#1985) first.
+
+import { createHash, randomBytes } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import {
+  cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+} from 'node:fs'
+import { homedir } from 'node:os'
+import { join, relative, sep } from 'node:path'
+import { MAIN_AGENT_ID, STORE_DIR } from '../config.js'
+import { agentDir } from './agent-config.js'
+import { atomicWriteFileSync } from './atomic-write.js'
+
+export type SkillTarget = { scope: 'global' } | { scope: 'agent'; agent: string }
+export type PendingSource = 'generate' | 'import'
+
+export interface PendingMeta {
+  id: string
+  name: string
+  target: SkillTarget
+  source: PendingSource
+  createdAt: string
+}
+
+export interface ScanFile {
+  path: string
+  size: number
+  kind: 'markdown' | 'script' | 'binary' | 'other'
+  executable: boolean
+  shebang?: string
+}
+
+export interface ScanFinding {
+  file: string
+  line: number
+  pattern: string
+  excerpt: string
+}
+
+export interface ScanReport {
+  files: ScanFile[]
+  findings: ScanFinding[]
+  totalBytes: number
+  // true when the bounds below stopped the scan: the approver is told the
+  // list is incomplete instead of reading a short list as a clean one.
+  truncated: boolean
+}
+
+export interface PendingSkill extends PendingMeta {
+  hash: string
+  report: ScanReport
+  skillMd: string | null
+}
+
+export const SKILL_PENDING_DIRNAME = 'skills-pending'
+const MAX_FILES = 300
+const MAX_BYTES = 8 * 1024 * 1024
+const MAX_FINDINGS = 200
+const SKILL_MD_PREVIEW_CHARS = 60_000
+
+export function pendingRoot(): string {
+  return join(STORE_DIR, SKILL_PENDING_DIRNAME)
+}
+
+export function globalSkillsRoot(): string {
+  return join(homedir(), '.claude', 'skills')
+}
+
+// The live root a target resolves to. The main agent's own root IS the
+// global one (agents-skills.ts skillsRootFor).
+export function targetRoot(target: SkillTarget): string {
+  if (target.scope === 'global' || target.agent === MAIN_AGENT_ID) return globalSkillsRoot()
+  return join(agentDir(target.agent), '.claude', 'skills')
+}
+
+const ID_RE = /^[a-z0-9-]{1,80}--[0-9a-f]{12}$/
+
+function newId(name: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'skill'
+  return `${slug}--${randomBytes(6).toString('hex')}`
+}
+
+function entryDir(id: string): string {
+  if (!ID_RE.test(id)) throw new Error('invalid pending id')
+  return join(pendingRoot(), id)
+}
+
+function sameTarget(a: SkillTarget, b: SkillTarget): boolean {
+  if (a.scope !== b.scope) return false
+  return a.scope === 'global' || (b.scope === 'agent' && a.agent === b.agent)
+}
+
+function readMeta(id: string): PendingMeta | null {
+  try {
+    const meta = JSON.parse(readFileSync(join(entryDir(id), 'meta.json'), 'utf-8')) as PendingMeta
+    return meta && meta.id === id ? meta : null
+  } catch { return null }
+}
+
+function listIds(): string[] {
+  try { return readdirSync(pendingRoot()).filter((f) => ID_RE.test(f)) } catch { return [] }
+}
+
+// Why a name cannot be queued for a target: a live skill of that name, or a
+// pending one waiting for the same target. null = free.
+export function nameConflict(target: SkillTarget, name: string): 'live' | 'pending' | null {
+  if (existsSync(join(targetRoot(target), name))) return 'live'
+  for (const id of listIds()) {
+    const m = readMeta(id)
+    if (m && m.name === name && sameTarget(m.target, target)) return 'pending'
+  }
+  return null
+}
+
+function writeMeta(dir: string, meta: PendingMeta): void {
+  atomicWriteFileSync(join(dir, 'meta.json'), JSON.stringify(meta, null, 2))
+}
+
+// A generated skill: one SKILL.md.
+export function queueGeneratedSkill(target: SkillTarget, name: string, skillMd: string): PendingMeta {
+  const id = newId(name)
+  const dir = entryDir(id)
+  mkdirSync(join(dir, 'skill'), { recursive: true })
+  atomicWriteFileSync(join(dir, 'skill', 'SKILL.md'), skillMd)
+  const meta: PendingMeta = { id, name, target, source: 'generate', createdAt: new Date().toISOString() }
+  writeMeta(dir, meta)
+  return meta
+}
+
+// An imported skill directory (already extracted and checked by the caller):
+// moved, not copied, so nothing of it stays outside the pending area.
+export function queueImportedSkillDir(target: SkillTarget, name: string, srcDir: string): PendingMeta {
+  const id = newId(name)
+  const dir = entryDir(id)
+  mkdirSync(dir, { recursive: true })
+  renameSync(srcDir, join(dir, 'skill'))
+  const meta: PendingMeta = { id, name, target, source: 'import', createdAt: new Date().toISOString() }
+  writeMeta(dir, meta)
+  return meta
+}
+
+// A scratch directory for extracting an upload, inside the pending area (same
+// filesystem, so the queue step is a rename) and never inside a skill root.
+export function newExtractDir(): string {
+  const dir = join(pendingRoot(), `_extract_${randomBytes(8).toString('hex')}`)
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+// Every regular file under `root`, sorted, with its path relative to root.
+function filesUnder(root: string): string[] {
+  const out: string[] = []
+  const rec = (dir: string) => {
+    let names: string[]
+    try { names = readdirSync(dir).sort() } catch { return }
+    for (const n of names) {
+      const abs = join(dir, n)
+      let st
+      try { st = lstatSync(abs) } catch { continue }
+      if (st.isDirectory()) rec(abs)
+      else out.push(relative(root, abs).split(sep).join('/'))
+    }
+  }
+  rec(root)
+  return out
+}
+
+function hasSymlink(root: string): boolean {
+  const rec = (dir: string): boolean => {
+    let names: string[]
+    try { names = readdirSync(dir) } catch { return false }
+    for (const n of names) {
+      const abs = join(dir, n)
+      let st
+      try { st = lstatSync(abs) } catch { continue }
+      if (st.isSymbolicLink()) return true
+      if (st.isDirectory() && rec(abs)) return true
+    }
+    return false
+  }
+  return rec(root)
+}
+
+// The hash an approval is bound to: every file's relative path and bytes,
+// length-framed, in sorted order. A file added, removed or changed after the
+// approver looked changes it, and the approval no longer applies.
+export function skillDirHash(root: string): string {
+  const h = createHash('sha256')
+  h.update('marveen-pending-skill-v1\n')
+  for (const rel of filesUnder(root)) {
+    let buf: Buffer
+    try { buf = readFileSync(join(root, rel)) } catch { buf = Buffer.from('') }
+    h.update(`${rel}\0${buf.length}\0`)
+    h.update(buf)
+  }
+  return h.digest('hex')
+}
+
+const SCRIPT_EXT = new Set(['.sh', '.bash', '.zsh', '.py', '.js', '.mjs', '.cjs', '.ts', '.rb', '.pl', '.php', '.ps1', '.bat', '.cmd', '.command', '.applescript', '.scpt'])
+const MARKDOWN_EXT = new Set(['.md', '.markdown', '.txt'])
+
+// Invisible to a reader, read by the model: zero-width, bidi controls, the
+// Unicode tag block. Escaped so this source file stays plain ASCII.
+const INVISIBLE_RE = /[​-‏‪-‮⁠-⁤⁦-⁩﻿]|[\u{E0000}-\u{E007F}]/gu
+
+// The same shapes scripts/hooks/browser-content-notice.py names, plus the
+// install/exec and persistence shapes a skill has no reason to carry.
+export const SKILL_SCAN_PATTERNS: ReadonlyArray<[string, RegExp]> = [
+  ['security-tag-forgery', /<\s*\/?\s*(untrusted|trusted-peer|scheduled-task|channel)\b/i],
+  ['system-reminder-forgery', /<\s*\/?\s*system-reminder\b/i],
+  ['directive-header-forgery', /\[(SYSTEM-DIREKTIVA|CONTEXT-GUARD|CONTEXT-RESTART-GATE|SYSTEM:)/i],
+  ['instruction-override', /\b(ignore|disregard|forget)\b[^.\n]{0,40}\b(previous|prior|above|all)\b[^.\n]{0,20}\b(instruction|prompt|rule|direction)/i],
+  ['role-reassignment', /\byou are now\b|\bnew (system )?(instructions|prompt)\b|\bact as\b[^.\n]{0,30}\b(admin|root|developer mode)/i],
+  ['credential-target', /(~\/\.ssh|id_rsa|\.env\b|CLAUDE_CODE_OAUTH_TOKEN|dashboard-token|\.credentials\.json|api[_-]?key\s*[:=])/i],
+  ['exfil-shape', /\b(curl|wget|fetch)\b[^\n]{0,60}https?:\/\//i],
+  ['pipe-to-shell', /\|\s*(ba|z)?sh\b|\bbash\s+<\s*\(\s*curl/i],
+  ['decode-and-run', /\b(eval|exec)\s*\(\s*(base64|atob|codecs\.decode|bytes\.fromhex)|base64\s+(-d|--decode)[^\n]{0,40}\|\s*(ba|z)?sh/i],
+  ['shell-exec', /\bos\.system\s*\(|subprocess\.[a-z_]+\([^)\n]{0,120}shell\s*=\s*True|child_process|\bexecSync\s*\(/],
+  ['persistence-target', /(settings(\.local)?\.json|scheduled-tasks|crontab\b|LaunchAgents|\.bashrc|\.zshrc|\.profile\b)/i],
+  ['install-hook', /"(pre|post)install"\s*:|\bnpm\s+(i|install)\b|\bpip3?\s+install\b|\bbrew\s+install\b/i],
+  ['long-encoded-blob', /[A-Za-z0-9+/]{200,}={0,2}/],
+]
+
+function excerpt(line: string, at: number): string {
+  const start = Math.max(0, at - 40)
+  return line.slice(start, start + 120).replace(INVISIBLE_RE, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)
+}
+
+export function scanSkillDir(root: string): ScanReport {
+  const files: ScanFile[] = []
+  const findings: ScanFinding[] = []
+  let totalBytes = 0
+  let truncated = false
+  for (const rel of filesUnder(root)) {
+    if (files.length >= MAX_FILES) { truncated = true; break }
+    const abs = join(root, rel)
+    let st
+    try { st = statSync(abs) } catch { continue }
+    totalBytes += st.size
+    const dot = rel.lastIndexOf('.')
+    const ext = dot > rel.lastIndexOf('/') ? rel.slice(dot).toLowerCase() : ''
+    const executable = (st.mode & 0o111) !== 0
+    if (totalBytes > MAX_BYTES) {
+      truncated = true
+      files.push({ path: rel, size: st.size, kind: 'other', executable })
+      break
+    }
+    let buf: Buffer
+    try { buf = readFileSync(abs) } catch { continue }
+    const head = buf.subarray(0, 4)
+    const isBinary = buf.includes(0) || (head[0] === 0x7f && head.toString('latin1', 1, 4) === 'ELF') || head.toString('latin1', 0, 2) === 'MZ'
+    const text = isBinary ? '' : buf.toString('utf-8')
+    const nl = text.indexOf('\n')
+    const shebang = !isBinary && text.startsWith('#!') ? text.slice(0, nl < 0 ? 80 : Math.min(nl, 80)) : undefined
+    const kind: ScanFile['kind'] = isBinary ? 'binary'
+      : (SCRIPT_EXT.has(ext) || shebang) ? 'script'
+      : MARKDOWN_EXT.has(ext) ? 'markdown' : 'other'
+    files.push({ path: rel, size: st.size, kind, executable, ...(shebang ? { shebang } : {}) })
+    if (isBinary) continue
+    const lines = text.split('\n')
+    for (let i = 0; i < lines.length && findings.length < MAX_FINDINGS; i++) {
+      const line = lines[i]
+      INVISIBLE_RE.lastIndex = 0
+      const inv = INVISIBLE_RE.exec(line)
+      if (inv) findings.push({ file: rel, line: i + 1, pattern: 'invisible-unicode', excerpt: excerpt(line, inv.index) })
+      for (const [name, rx] of SKILL_SCAN_PATTERNS) {
+        const m = rx.exec(line)
+        if (m) findings.push({ file: rel, line: i + 1, pattern: name, excerpt: excerpt(line, m.index) })
+      }
+    }
+    if (findings.length >= MAX_FINDINGS) truncated = true
+  }
+  return { files, findings, totalBytes, truncated }
+}
+
+export function getPending(id: string): PendingSkill | null {
+  const meta = readMeta(id)
+  if (!meta) return null
+  const skillRoot = join(entryDir(id), 'skill')
+  let skillMd: string | null = null
+  try { skillMd = readFileSync(join(skillRoot, 'SKILL.md'), 'utf-8').slice(0, SKILL_MD_PREVIEW_CHARS) } catch { /* none at the top */ }
+  return { ...meta, hash: skillDirHash(skillRoot), report: scanSkillDir(skillRoot), skillMd }
+}
+
+export function listPending(): PendingSkill[] {
+  return listIds()
+    .map((id) => getPending(id))
+    .filter((p): p is PendingSkill => p !== null)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+}
+
+export type ApproveResult =
+  | { ok: true; name: string; path: string }
+  | { ok: false; status: number; error: string }
+
+// Make a pending skill live. `hash` must be the hash the approver was shown:
+// content changed since then is not approved by that click.
+export function approvePending(id: string, hash: unknown): ApproveResult {
+  let meta: PendingMeta | null
+  try { meta = readMeta(id) } catch { meta = null }
+  if (!meta) return { ok: false, status: 404, error: 'Pending skill not found' }
+  const skillRoot = join(entryDir(id), 'skill')
+  const current = skillDirHash(skillRoot)
+  if (typeof hash !== 'string' || hash !== current) {
+    return { ok: false, status: 409, error: 'The pending skill changed since it was shown (hash mismatch); reload and review it again' }
+  }
+  // A link planted into the pending dir after the scan would go live with it.
+  if (hasSymlink(skillRoot)) return { ok: false, status: 400, error: 'The pending skill contains a symlink; it cannot be approved' }
+  const root = targetRoot(meta.target)
+  const dest = join(root, meta.name)
+  if (!dest.startsWith(root + sep)) return { ok: false, status: 400, error: 'Invalid skill name' }
+  if (existsSync(dest)) return { ok: false, status: 409, error: `Skill already exists: ${meta.name}` }
+  if (meta.target.scope === 'agent' && meta.target.agent !== MAIN_AGENT_ID && !existsSync(agentDir(meta.target.agent))) {
+    return { ok: false, status: 404, error: 'Agent not found' }
+  }
+  mkdirSync(root, { recursive: true })
+  try {
+    renameSync(skillRoot, dest)
+  } catch {
+    // Another filesystem (store/ and ~/.claude on different volumes): copy, then drop the source.
+    cpSync(skillRoot, dest, { recursive: true, verbatimSymlinks: true })
+    rmSync(skillRoot, { recursive: true, force: true })
+  }
+  rmSync(entryDir(id), { recursive: true, force: true })
+  return { ok: true, name: meta.name, path: dest }
+}
+
+export function rejectPending(id: string): boolean {
+  let meta: PendingMeta | null
+  try { meta = readMeta(id) } catch { meta = null }
+  if (!meta) return false
+  rmSync(entryDir(id), { recursive: true, force: true })
+  return true
+}
+
+export type ImportResult =
+  | { ok: true; queued: PendingMeta[] }
+  | { ok: false; status: number; error: string }
+
+// A top-level directory name of an archive becomes a skill name.
+const IMPORT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/
+
+// The zip import for both scopes: extract into a scratch dir inside the
+// pending area (never into a skill root), keep the structural checks the
+// routes had (path traversal, name clash, symlinks, a SKILL.md per skill),
+// and queue each skill directory. Loose top-level files are dropped with the
+// scratch dir. Nothing of the upload reaches a skill root here.
+export function importArchiveToPending(target: SkillTarget, data: Buffer): ImportResult {
+  const work = newExtractDir()
+  const zip = join(work, 'upload.zip')
+  const out = join(work, 'x')
+  try {
+    mkdirSync(out)
+    writeFileSync(zip, data)
+    let listing: string
+    try {
+      listing = execFileSync('unzip', ['-Z1', zip], { timeout: 5000, encoding: 'utf-8' })
+    } catch {
+      return { ok: false, status: 400, error: 'Failed to read the archive' }
+    }
+    const entries = listing.split('\n').map((l) => l.trim()).filter(Boolean)
+    for (const entry of entries) {
+      if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
+        return { ok: false, status: 400, error: 'Invalid skill file: path traversal detected' }
+      }
+    }
+    const topDirs = new Set<string>()
+    for (const entry of entries) {
+      const parts = entry.split('/')
+      if (parts.length > 1 && parts[0]) topDirs.add(parts[0])
+    }
+    for (const td of topDirs) {
+      if (!IMPORT_NAME_RE.test(td)) return { ok: false, status: 400, error: `Invalid skill directory name in archive: ${td}` }
+      const clash = nameConflict(target, td)
+      if (clash === 'live') return { ok: false, status: 409, error: `Skill already exists: ${td}. Delete it first if you want to overwrite.` }
+      if (clash === 'pending') return { ok: false, status: 409, error: `A skill named ${td} is already waiting for approval.` }
+    }
+    try {
+      execFileSync('unzip', ['-o', '-q', zip, '-d', out], { timeout: 10000 })
+    } catch {
+      return { ok: false, status: 500, error: 'Failed to extract .skill file' }
+    }
+    if (hasSymlink(out)) return { ok: false, status: 400, error: 'Invalid skill file: symlink entries rejected' }
+    const skillDirs = [...topDirs].filter((td) => {
+      const p = join(out, td)
+      try { return statSync(p).isDirectory() && existsSync(join(p, 'SKILL.md')) } catch { return false }
+    })
+    if (skillDirs.length === 0) return { ok: false, status: 400, error: 'No valid skill (SKILL.md) found in archive' }
+    return { ok: true, queued: skillDirs.map((td) => queueImportedSkillDir(target, td, join(out, td))) }
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+}
