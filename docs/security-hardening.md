@@ -445,11 +445,16 @@ approved on the dashboard's Skills page, which shows first:
   (a skill queued for the main agent is global, because its root is the global
   one);
 - every file IN FULL: the text of every file, losslessly (control bytes such as
-  NUL, and bytes that are not UTF-8, appear as `<0xNN>` and are flagged), the
-  size and sha256 of every file, and whether it is executable, with scripts,
-  binaries and executables listed first. An image or a PDF is shown by size and
-  sha256 only; a compiled program (ELF, PE, Mach-O) cannot be reviewed there, so
-  a skill that carries one cannot be approved from the dashboard;
+  NUL, and bytes that are not UTF-8, appear as `<0xNN>`; C1 controls and the
+  U+2028/U+2029 separators as `<U+XXXX>`; all of them flagged), the size and
+  sha256 of every file, and whether it is executable, with scripts, binaries and
+  executables listed first. An image is shown by size and sha256 only, and a
+  file counts as an image by its first bytes (PNG, JPEG, GIF, WEBP, BMP, ICO,
+  matching its extension), not by its name: a text file named `logo.png` is
+  shown and scanned as text. Text drawn inside a real image is not shown. A PDF
+  (the model reads its text) and a compiled program (ELF, PE, Mach-O) cannot be
+  reviewed there, so a skill that carries one cannot be approved from the
+  dashboard;
 - the scan findings: invisible Unicode (zero-width and tag characters), forged
   security envelopes and directive headers, instruction overrides, credential
   targets, exfil and pipe-to-shell shapes, decode-and-run, shell exec,

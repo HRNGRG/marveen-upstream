@@ -92,7 +92,7 @@ export interface ScanReport {
   // true when the findings list hit its cap. Every file is still shown in
   // full, so this alone does not block the approval (#2088 review).
   findingsTruncated: boolean
-  // Files the approver cannot read (a native executable): their presence
+  // Files the approver cannot read (a native executable, a PDF): their presence
   // makes the skill not approvable from the dashboard.
   unreviewable: string[]
 }
@@ -264,9 +264,26 @@ export function skillDirHash(root: string, meta?: Pick<PendingMeta, 'name' | 'ta
 
 const SCRIPT_EXT = new Set(['.sh', '.bash', '.zsh', '.py', '.js', '.mjs', '.cjs', '.ts', '.rb', '.pl', '.php', '.ps1', '.bat', '.cmd', '.command', '.applescript', '.scpt'])
 const MARKDOWN_EXT = new Set(['.md', '.markdown', '.txt'])
-// Shown by size and sha256 only: an image or a PDF has no text to read, and a
-// model opening one gets the picture, not instructions hidden in the bytes.
-const MEDIA_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.pdf'])
+// An image is shown by size and sha256 only: a model opening one gets the
+// picture, not instructions hidden in the bytes. Decided by its FIRST BYTES,
+// matching its extension, not by the name (#2088 delta 2): a text file named
+// assets/logo.png was "binary", never shown nor scanned, yet approvable.
+// Anything that is not a real image of its kind is text, shown and scanned.
+const jpeg = (b: Buffer) => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff
+const IMAGE_MAGIC: Record<string, (b: Buffer) => boolean> = {
+  '.png': (b) => b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  '.jpg': jpeg,
+  '.jpeg': jpeg,
+  '.gif': (b) => /^GIF8[79]a$/.test(b.toString('latin1', 0, 6)),
+  '.webp': (b) => b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP',
+  '.bmp': (b) => b.length >= 14 && b.toString('latin1', 0, 2) === 'BM',
+  '.ico': (b) => b.length >= 6 && b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0,
+}
+
+// A PDF is NOT an image here: the Read tool hands its text to the model, and
+// that text cannot be reviewed in this view, so a PDF blocks the approval,
+// whatever its name.
+const isPdf = (b: Buffer) => b.toString('latin1', 0, 5) === '%PDF-'
 
 function isNativeExecutable(buf: Buffer): boolean {
   if (buf.length < 4) return false
@@ -304,6 +321,10 @@ export function reviewText(buf: Buffer): { text: string; invalidUtf8: number; co
     }
     if (cp === -1) { out += hex(b); invalidUtf8++; i++; continue }
     if ((cp < 0x20 && cp !== 0x09 && cp !== 0x0a && cp !== 0x0d) || cp === 0x7f) { out += hex(cp); controlBytes++ }
+    // C1 controls and the line/paragraph separators: valid UTF-8, but they
+    // move or hide text the way a raw control byte does. <U+XXXX>, so they
+    // do not read as an invalid byte.
+    else if ((cp >= 0x80 && cp <= 0x9f) || cp === 0x2028 || cp === 0x2029) { out += `<U+${cp.toString(16).toUpperCase().padStart(4, '0')}>`; controlBytes++ }
     else out += String.fromCodePoint(cp)
     i += len
   }
@@ -361,8 +382,9 @@ export function scanSkillDir(root: string): ScanReport {
     let buf: Buffer
     try { buf = readFileSync(abs) } catch { continue }
     const native = isNativeExecutable(buf)
-    const media = !native && MEDIA_EXT.has(ext)
-    const isBinary = native || media
+    const pdf = !native && isPdf(buf)
+    const image = !native && !pdf && (IMAGE_MAGIC[ext]?.(buf) ?? false)
+    const isBinary = native || pdf || image
     const reviewed = isBinary ? null : reviewText(buf)
     const text = reviewed ? reviewed.text : ''
     const nl = text.indexOf('\n')
@@ -372,14 +394,18 @@ export function scanSkillDir(root: string): ScanReport {
       : MARKDOWN_EXT.has(ext) ? 'markdown' : 'other'
     const sha256 = createHash('sha256').update(buf).digest('hex')
     files.push({ path: rel, size: st.size, kind, executable, ...(shebang ? { shebang } : {}), sha256, ...(isBinary ? {} : { text }) })
-    if (native) {
+    if (native || pdf) {
       unreviewable.push(rel)
-      if (findings.length < MAX_FINDINGS) findings.push({ file: rel, line: 0, pattern: 'native-executable', excerpt: 'a compiled program: its content cannot be reviewed here' })
+      if (findings.length < MAX_FINDINGS) {
+        findings.push(native
+          ? { file: rel, line: 0, pattern: 'native-executable', excerpt: 'a compiled program: its content cannot be reviewed here' }
+          : { file: rel, line: 0, pattern: 'pdf-document', excerpt: 'a PDF: the model reads its text, which cannot be reviewed here' })
+      }
       continue
     }
     if (!reviewed) continue
     if (reviewed.controlBytes && findings.length < MAX_FINDINGS) {
-      findings.push({ file: rel, line: 0, pattern: 'control-bytes', excerpt: `${reviewed.controlBytes} control byte(s), shown as <0xNN>` })
+      findings.push({ file: rel, line: 0, pattern: 'control-bytes', excerpt: `${reviewed.controlBytes} control byte(s), shown as <0xNN> or <U+XXXX>` })
     }
     if (reviewed.invalidUtf8 && findings.length < MAX_FINDINGS) {
       findings.push({ file: rel, line: 0, pattern: 'invalid-utf8', excerpt: `${reviewed.invalidUtf8} byte(s) that are not UTF-8, shown as <0xNN>` })
