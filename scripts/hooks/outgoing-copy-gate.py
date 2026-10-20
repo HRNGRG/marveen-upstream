@@ -342,8 +342,9 @@ _HEAD_DEPTH = 8
 # module flags, flag lists measured as complete). uv and pipx: the value flags
 # are read from `uv run --help` (uv 0.10.2) and `pipx run --help` (pipx 1.11.1)
 # on the dev host. The others were not installed there, so their flags are not
-# listed, and an undeclared option is read BOTH ways (as a flag, and as taking
-# the next word): an unknown option errs toward auditing, as with _WRAPPERS.
+# listed, and every word of their option run that could be the program is
+# judged as one (a word after an option may be its value or the command): an
+# unknown option errs toward auditing, as with _WRAPPERS.
 # Not covered: `uvx` / `uv tool run` (they run an installed package's entry
 # point, not a script path), and a module flag inside a short cluster (`-qm`).
 # Mirrored in email-send-gate.mjs (LAUNCHERS / launcherHeads);
@@ -380,7 +381,24 @@ def _launcher_heads(toks, spec, _d: int):
     if j < 0:
         return [toks]
     heads = []
-    for value_reading in ((False,) if complete else (False, True)):
+    if not complete:
+        # An unmeasured launcher's options are unknown, so every word in its option
+        # run that could be the program is judged as the program: the word after an
+        # option may be that option's value, or the command (Dani's #2086 review:
+        # `conda run --no-capture-output -n base python send.py` mixes a flag and a
+        # value option, which no single reading of all options fits).
+        for x in range(j + 1, len(toks)):
+            if toks[x] == "--":
+                heads.append(toks[x + 1:])
+                break
+            if toks[x].startswith("-") and len(toks[x]) > 1:
+                continue
+            heads.append(toks[x:])
+            if not (x > j + 1 and toks[x - 1].startswith("-") and len(toks[x - 1]) > 1):
+                break
+        if not heads:
+            heads.append([])
+    else:
         i, head = j + 1, None
         while i < len(toks):
             t = toks[i]
@@ -395,11 +413,11 @@ def _launcher_heads(toks, spec, _d: int):
                 if eq > 0 and t[:eq] in module_flags:
                     head = ["python3", "-m", t[eq + 1:]] + toks[i + 1:]
                     break
-                i += 2 if eq < 0 and (t[2:] in long_val or value_reading) else 1
+                i += 2 if eq < 0 and t[2:] in long_val else 1
                 continue
             if t.startswith("-") and len(t) > 1:
                 k = next((x for x, ch in enumerate(t[1:], 1) if ch in short_val), -1)
-                i += 2 if k == len(t) - 1 or (k == -1 and value_reading) else 1
+                i += 2 if k == len(t) - 1 else 1
                 continue
             break
         heads.append(head if head is not None else toks[i:])

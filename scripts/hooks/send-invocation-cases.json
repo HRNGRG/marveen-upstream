@@ -1255,6 +1255,46 @@
       "name": "MAILGATEUV1020 control: the sender script under a launcher without a recipient flag (no send): uv run send.py",
       "cmd": "uv run send.py",
       "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 (#2086 review): an unmeasured launcher, a flag then a value option: conda run --no-capture-output -n base",
+      "cmd": "conda run --no-capture-output -n base python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020 (#2086 review): an unmeasured launcher, a flag then a value option: conda run --live-stream -n base",
+      "cmd": "conda run --live-stream -n base python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020 (#2086 review): an unmeasured launcher, a short flag then a value option: poetry run -v -C /x",
+      "cmd": "poetry run -v -C /x python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020 (#2086 review): an unmeasured launcher, a long flag then a value option: pdm run --verbose -p /x",
+      "cmd": "pdm run --verbose -p /x python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020 (#2086 review): an unmeasured launcher, two long options: rye run --verbose --pyproject /x/p.toml",
+      "cmd": "rye run --verbose --pyproject /x/p.toml python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020 (#2086 review): an unmeasured launcher, a value option then a flag: conda run -n base --no-capture-output",
+      "cmd": "conda run -n base --no-capture-output python send.py --to a@example.com",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEUV1020 control: an unmeasured launcher, the program's own variable argument and a --to value is not a candidate program",
+      "cmd": "poetry run python report.py \"$OUT\" --to 2026-10-20",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEUV1020 control: an unmeasured launcher with mixed options, an ordinary run",
+      "cmd": "conda run --no-capture-output -n base python train.py --epochs 3",
+      "expected": false
     }
   ]
 }

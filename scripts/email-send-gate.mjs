@@ -322,31 +322,42 @@ function launcherHeads(toks, spec, d) {
   }
   if (j < 0) return [toks]
   const heads = []
-  // An unmeasured launcher's undeclared option is read both ways, as a flag and
-  // as taking the next word: an unknown option errs toward auditing.
-  for (const valueReading of complete ? [false] : [false, true]) {
-    let i = j + 1
-    let head = null
-    while (i < toks.length) {
-      const t = toks[i]
-      if (t === '--') { i++; break }
-      if (moduleFlags.includes(t)) { head = ['python3', '-m', ...toks.slice(i + 1)]; break }
-      if (t.startsWith('--')) {
-        const eq = t.indexOf('=')
-        if (eq > 0 && moduleFlags.includes(t.slice(0, eq))) { head = ['python3', '-m', t.slice(eq + 1), ...toks.slice(i + 1)]; break }
-        i += eq < 0 && (longVal.includes(t.slice(2)) || valueReading) ? 2 : 1
-        continue
-      }
-      if (t.startsWith('-') && t.length > 1) {
-        let k = -1
-        for (let x = 1; x < t.length; x++) if (shortVal.includes(t[x])) { k = x; break }
-        i += k === t.length - 1 || (k === -1 && valueReading) ? 2 : 1
-        continue
-      }
-      break
+  if (!complete) {
+    // An unmeasured launcher's options are unknown, so every word in its option
+    // run that could be the program is judged as the program: the word after an
+    // option may be that option's value, or the command (Dani's #2086 review:
+    // `conda run --no-capture-output -n base python send.py` mixes a flag and a
+    // value option, which no single reading of all options fits).
+    for (let x = j + 1; x < toks.length; x++) {
+      if (toks[x] === '--') { heads.push(toks.slice(x + 1)); break }
+      if (toks[x].startsWith('-') && toks[x].length > 1) continue
+      heads.push(toks.slice(x))
+      if (!(x > j + 1 && toks[x - 1].startsWith('-') && toks[x - 1].length > 1)) break
     }
-    heads.push(head ?? toks.slice(i))
+    if (!heads.length) heads.push([])
+    return heads.flatMap((h) => commandHeads(h, d + 1))
   }
+  let i = j + 1
+  let head = null
+  while (i < toks.length) {
+    const t = toks[i]
+    if (t === '--') { i++; break }
+    if (moduleFlags.includes(t)) { head = ['python3', '-m', ...toks.slice(i + 1)]; break }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=')
+      if (eq > 0 && moduleFlags.includes(t.slice(0, eq))) { head = ['python3', '-m', t.slice(eq + 1), ...toks.slice(i + 1)]; break }
+      i += eq < 0 && longVal.includes(t.slice(2)) ? 2 : 1
+      continue
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      let k = -1
+      for (let x = 1; x < t.length; x++) if (shortVal.includes(t[x])) { k = x; break }
+      i += k === t.length - 1 ? 2 : 1
+      continue
+    }
+    break
+  }
+  heads.push(head ?? toks.slice(i))
   return heads.flatMap((h) => commandHeads(h, d + 1))
 }
 
