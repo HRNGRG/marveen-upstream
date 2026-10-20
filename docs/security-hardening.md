@@ -494,8 +494,9 @@ approved on the dashboard's Skills page, which shows first:
   file counts as an image by its first bytes (PNG, JPEG, GIF, WEBP, BMP, ICO,
   matching its extension), not by its name: a text file named `logo.png` is
   shown and scanned as text. The readable runs between a real image's bytes
-  (at least 8 printable characters, as `strings` prints them) are shown under
-  the file and scanned, because `cat` hands them to the model. Text drawn
+  (at least 8 printable characters; a control byte such as NUL is skipped, not
+  a break, so text spelled out between NULs or as UTF-16LE is one run) are
+  shown under the file and scanned, because `cat` hands them to the model. Text drawn
   inside a real image is not shown. A PDF
   (the model reads its text) and a compiled program (ELF, PE, Mach-O) cannot be
   reviewed there, so a skill that carries one cannot be approved from the

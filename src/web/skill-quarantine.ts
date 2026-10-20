@@ -309,6 +309,10 @@ export function printableRuns(buf: Buffer): string {
       const min = [0, 0, 0x80, 0x800, 0x10000][len]
       if (cp !== -1 && (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))) cp = -1
     }
+    // A C0 control (NUL, a newline, ...) does not end a run, and is not part
+    // of it: text spelled out between NUL bytes (UTF-16LE, or "I\0g\0n...")
+    // still reads as one run, the way a terminal shows it (#2088 delta 4).
+    if (cp >= 0 && cp < 0x20 && cp !== 0x09) { i++; continue }
     const printable = cp === 0x09 || (cp >= 0x20 && cp !== 0x7f && !(cp >= 0x80 && cp <= 0x9f) && cp !== 0x2028 && cp !== 0x2029)
     if (!printable) { flush(); i++; continue }
     cur += String.fromCodePoint(cp)
