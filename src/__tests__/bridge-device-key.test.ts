@@ -40,15 +40,38 @@ import {
   _clearDeviceKeyCacheForTest,
 } from '../web/auth-device-keys.js'
 import { buildRestrictedLine, validatePublicKeyLine } from '../remote-enroll-core.js'
-import { parseArgs as parseEnrollArgs, bundleCredential } from '../../scripts/remote-access-enroll.js'
-import { issueDeviceKey, parseArgs as parseIssueArgs } from '../../scripts/bridge-device-key.js'
+import type { BundleTokenChoice, BundleTokenMode } from '../bridge-device-key.js'
+
+// The CLIs live in scripts/, outside tsconfig's rootDir, so they are loaded
+// dynamically (a static import would pull them into `npm run build`), the same
+// way enroll-port-follows-web-port.test.ts reaches remote-access-enroll.ts.
+interface EnrollCli {
+  parseArgs: (argv: string[]) => { tokenMode: BundleTokenMode; name?: string }
+  bundleCredential: (
+    args: { tokenMode: BundleTokenMode; name?: string },
+    installId: string,
+    action: string,
+    openDb?: () => void,
+  ) => BundleTokenChoice
+}
+type IssueResult =
+  | { ok: true; installId: string; name: string; key: string; replaced: boolean }
+  | { ok: false; reason: string }
+interface IssueCli {
+  parseArgs: (argv: string[]) => { installId?: string; name?: string }
+  issueDeviceKey: (args: { installId?: string; name?: string }, authorizedKeys: string | null, openDb?: () => void) => IssueResult
+}
 
 const ROOT = join(__dirname, '..', '..')
+let parseEnrollArgs: EnrollCli['parseArgs']
+let bundleCredential: EnrollCli['bundleCredential']
+let parseIssueArgs: IssueCli['parseArgs']
+let issueDeviceKey: IssueCli['issueDeviceKey']
 const TSX = join(ROOT, 'node_modules', '.bin', 'tsx')
 const SHARED = 's'.repeat(64)
 const noDb = () => {}
 
-function keyLine(installId = randomUUID()): { line: string; installId: string } {
+function keyLine(installId: string = randomUUID()): { line: string; installId: string } {
   const type = Buffer.from('ssh-ed25519', 'utf8')
   const blob = Buffer.concat([
     Buffer.from([0, 0, 0, type.length]), type,
@@ -67,9 +90,15 @@ function enrolledAuthorizedKeys(installId: string): string {
   ].join('\n')
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   process.env.NODE_ENV = 'test'
   initDatabase(':memory:')
+  const enroll = (await import(join(ROOT, 'scripts', 'remote-access-enroll.ts'))) as EnrollCli
+  const issue = (await import(join(ROOT, 'scripts', 'bridge-device-key.ts'))) as IssueCli
+  parseEnrollArgs = enroll.parseArgs
+  bundleCredential = enroll.bundleCredential
+  parseIssueArgs = issue.parseArgs
+  issueDeviceKey = issue.issueDeviceKey
 })
 
 let savedToken: string | undefined
