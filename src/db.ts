@@ -6413,15 +6413,19 @@ export function consumeApproval(params: {
   messageId?: string | null
   windowSeconds: number
   nowS?: number
+  // MARVEENGAPS1020 (a): the memory delete consumes a data_delete approval on
+  // the same one-shot terms. Every existing caller is the email path.
+  category?: string
 }): ApprovalConsumeResult {
   const now = params.nowS ?? Math.floor(Date.now() / 1000)
   const ref = params.messageId ?? null
+  const category = params.category ?? 'email_send'
   return db.transaction((): ApprovalConsumeResult => {
     const changes = db.prepare(`
       UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
-       WHERE id = ? AND category = 'email_send' AND status = 'approved' AND consumed_at IS NULL
+       WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
          AND content_hash = ? AND resolved_at IS NOT NULL AND resolved_at >= ?
-    `).run(now, params.consumer, ref, params.id, params.contentHash, now - params.windowSeconds).changes
+    `).run(now, params.consumer, ref, params.id, category, params.contentHash, now - params.windowSeconds).changes
     const event = db.prepare(`
       INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
     `)
@@ -6432,7 +6436,7 @@ export function consumeApproval(params: {
     }
     let reason: ApprovalConsumeRefusal
     if (!row) reason = 'not_found'
-    else if (row.category !== 'email_send') reason = 'wrong_category'
+    else if (row.category !== category) reason = 'wrong_category'
     else if (row.consumed_at != null) reason = 'already_consumed'
     else if (row.status !== 'approved') reason = 'not_approved'
     else if (row.content_hash !== params.contentHash) reason = 'hash_mismatch'

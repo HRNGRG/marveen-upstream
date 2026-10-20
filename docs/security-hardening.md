@@ -390,3 +390,35 @@ is refused by the other.
 
 A 409 means: do not send, and check the sent mailbox before deciding anything,
 because the earlier attempt may already have gone out.
+
+# Memory delete needs an approval (data_delete)
+
+`DELETE /api/memories/:id` is final: the row's versions are purged with it. The
+autonomy config ships `data_delete` at level 1, locked, but until this change no
+code read that level; only the tier guard stood in the way, and the caller could
+pass it with `?confirm_overwrite=1`.
+
+Now the route reads the level (`src/web/autonomy-level.ts`; a missing config or
+key reads as level 1):
+
+- **Level 3**: the delete runs as before, with the tier guard.
+- **Level 1 or 2**: the delete runs only with `?approval_id=<id>` of an approved,
+  unused `data_delete` approval bound to this memory in its current content state.
+  Without one the server files the request itself, on the same path as
+  `POST /api/approvals`: the owner is notified, and the description is worded by
+  the server from the row (id, owner, tier, length, the first 160 characters),
+  not by the caller. The answer is `409 approval_required` with the approval id,
+  so a script never reads the request as done. A retry gets the same open
+  request back instead of a new one.
+- The approval is consumed once, inside the same window as an email approval
+  (`EMAIL_APPROVAL_WINDOW_S`, 1800 s from the approval). An edit to the memory
+  after the approval changes the anchor, and the approval no longer deletes it.
+
+Considered and not chosen: turning the delete into an archive (a soft delete).
+That would keep the data, but it is a different feature with its own readers
+(every list and search would have to skip archived rows). The approval keeps
+the delete what it is and puts the decision where the config says it belongs.
+
+**Limit:** the approval can be resolved by any holder of the shared dashboard
+token, as every approval can today, so an agent could approve its own request.
+"Only a human may delete" needs the per-agent identity decision (#1985) first.

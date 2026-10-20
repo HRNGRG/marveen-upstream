@@ -43,6 +43,8 @@ level 1  → csak listázza/jelzi, semmit nem tesz
 
 Hiányzó config vagy kulcs esetén a default a 3. szint (a korábbi viselkedés).
 
+A legtöbb szintet az ágens promptja olvassa. Kettőt a szerver vagy egy hook is kikényszerít: az `email_send`-et a levélkapu (`scripts/hooks/email-approval-gate.py`), a `data_delete`-et a memória-törlés végpontja (`DELETE /api/memories/:id`, 3-as szint alatt csak jóváhagyott, egyszer felhasználható azonosítóval; lásd `docs/security-hardening.md`).
+
 ### Config-séma
 
 ```json
