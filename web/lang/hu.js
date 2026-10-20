@@ -813,6 +813,7 @@ window._i18n.hu = {
   'skills.pending.findings_truncated': 'A jelzéslista elérte a plafonját, ezért nem teljes; a fájlok viszont teljes egészükben fent vannak.',
   'skills.pending.unreviewable': 'PDF vagy lefordított program van benne ({list}), aminek a tartalma itt nem nézhető át, ezért itt nem hagyható jóvá.',
   'skills.pending.scripts': 'Szkriptek és futtatható fájlok ({n})',
+  'skills.pending.image_strings': 'Olvasható szöveg a kép bájtjai között. Ezt kapja a modell, ha a skill szövegként olvassa a fájlt (például cat-tel):',
   'skills.pending.binary_not_shown': 'Kép, PDF vagy lefordított program: a tartalma itt nem jeleníthető meg, csak a mérete és a sha256-ja. A képbe rajzolt szöveget sem mutatjuk.',
   'skills.pending.not_approvable': 'Ez a skill túl nagy ahhoz, hogy itt teljes egészében megmutassuk, ezért itt nem hagyható jóvá.',
   'skills.pending.executable': 'futtatható',

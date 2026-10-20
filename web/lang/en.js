@@ -568,6 +568,7 @@ window._i18n.en = {
   'skills.pending.findings_truncated': 'The findings list hit its cap and is incomplete; the files above are still shown in full.',
   'skills.pending.unreviewable': 'It contains a PDF or a compiled program ({list}) whose content cannot be reviewed here, so it cannot be approved here.',
   'skills.pending.scripts': 'Scripts and executable files ({n})',
+  'skills.pending.image_strings': 'Readable text between the image bytes. The model gets this if the skill reads the file as text (for example with cat):',
   'skills.pending.binary_not_shown': 'Image, PDF or compiled program: its content cannot be shown here, only its size and sha256. Text drawn inside an image is not shown either.',
   'skills.pending.not_approvable': 'This skill is too large to be shown here in full, so it cannot be approved here.',
   'skills.pending.executable': 'executable',

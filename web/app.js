@@ -11736,6 +11736,12 @@ function pendingFileRow(f) {
   det.appendChild(f.text != null
     ? pendingEl('pre', null, f.text)
     : pendingEl('div', 'skills-pending-warn', t('skills.pending.binary_not_shown')))
+  // #2088 delta 3: the readable runs of an image (what `cat` would hand the model)
+  if (f.text == null && f.strings) {
+    det.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.image_strings')))
+    det.appendChild(pendingEl('pre', null, f.strings))
+    det.open = true
+  }
   if (f.path === 'SKILL.md') det.open = true
   return det
 }

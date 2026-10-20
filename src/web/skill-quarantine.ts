@@ -73,6 +73,10 @@ export interface ScanFile {
   // byte the hash binds). Absent for a binary file, which is shown by size
   // and sha256 only, and in the summary listing.
   text?: string
+  // An image only: the readable runs between its bytes (#2088 delta 3). A
+  // real PNG header with text behind it opens as a picture in the Read tool,
+  // but `cat` hands that text to the model, so it is shown and scanned.
+  strings?: string
 }
 
 export interface ScanFinding {
@@ -280,6 +284,41 @@ const IMAGE_MAGIC: Record<string, (b: Buffer) => boolean> = {
   '.ico': (b) => b.length >= 6 && b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0,
 }
 
+// The readable runs of a binary file, as `strings` would print them: at least
+// MIN_RUN printable characters (ASCII or valid UTF-8, tab included), one run
+// per line. Whatever text hides behind a real image header ends up here.
+const MIN_RUN = 8
+export function printableRuns(buf: Buffer): string {
+  const runs: string[] = []
+  let cur = ''
+  let chars = 0
+  const flush = () => { if (chars >= MIN_RUN) runs.push(cur); cur = ''; chars = 0 }
+  let i = 0
+  while (i < buf.length) {
+    const b = buf[i]
+    const len = b < 0x80 ? 1 : (b & 0xe0) === 0xc0 ? 2 : (b & 0xf0) === 0xe0 ? 3 : (b & 0xf8) === 0xf0 ? 4 : 0
+    let cp = -1
+    if (len === 1) cp = b
+    else if (len > 1 && i + len <= buf.length) {
+      cp = b & (0xff >> (len + 1))
+      for (let k = 1; k < len; k++) {
+        const c = buf[i + k]
+        if ((c & 0xc0) !== 0x80) { cp = -1; break }
+        cp = (cp << 6) | (c & 0x3f)
+      }
+      const min = [0, 0, 0x80, 0x800, 0x10000][len]
+      if (cp !== -1 && (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))) cp = -1
+    }
+    const printable = cp === 0x09 || (cp >= 0x20 && cp !== 0x7f && !(cp >= 0x80 && cp <= 0x9f) && cp !== 0x2028 && cp !== 0x2029)
+    if (!printable) { flush(); i++; continue }
+    cur += String.fromCodePoint(cp)
+    chars++
+    i += len
+  }
+  flush()
+  return runs.join('\n')
+}
+
 // A PDF is NOT an image here: the Read tool hands its text to the model, and
 // that text cannot be reviewed in this view, so a PDF blocks the approval,
 // whatever its name.
@@ -365,6 +404,18 @@ export function scanSkillDir(root: string): ScanReport {
   let truncated = false
   let findingsTruncated = false
   const unreviewable: string[] = []
+  const scanLines = (rel: string, lines: string[]) => {
+    for (let i = 0; i < lines.length && findings.length < MAX_FINDINGS; i++) {
+      const line = lines[i]
+      INVISIBLE_RE.lastIndex = 0
+      const inv = INVISIBLE_RE.exec(line)
+      if (inv) findings.push({ file: rel, line: i + 1, pattern: 'invisible-unicode', excerpt: excerpt(line, inv.index) })
+      for (const [name, rx] of SKILL_SCAN_PATTERNS) {
+        const m = rx.exec(line)
+        if (m) findings.push({ file: rel, line: i + 1, pattern: name, excerpt: excerpt(line, m.index) })
+      }
+    }
+  }
   for (const rel of filesUnder(root)) {
     if (files.length >= MAX_FILES) { truncated = true; break }
     const abs = join(root, rel)
@@ -393,7 +444,8 @@ export function scanSkillDir(root: string): ScanReport {
       : (SCRIPT_EXT.has(ext) || shebang) ? 'script'
       : MARKDOWN_EXT.has(ext) ? 'markdown' : 'other'
     const sha256 = createHash('sha256').update(buf).digest('hex')
-    files.push({ path: rel, size: st.size, kind, executable, ...(shebang ? { shebang } : {}), sha256, ...(isBinary ? {} : { text }) })
+    const strings = image ? printableRuns(buf) : undefined
+    files.push({ path: rel, size: st.size, kind, executable, ...(shebang ? { shebang } : {}), sha256, ...(isBinary ? {} : { text }), ...(strings ? { strings } : {}) })
     if (native || pdf) {
       unreviewable.push(rel)
       if (findings.length < MAX_FINDINGS) {
@@ -403,24 +455,23 @@ export function scanSkillDir(root: string): ScanReport {
       }
       continue
     }
-    if (!reviewed) continue
+    if (!reviewed) {
+      if (strings) {
+        // the readable runs of an image are scanned like text; a run is a line
+        const runLines = strings.split('\n')
+        if (findings.length < MAX_FINDINGS) findings.push({ file: rel, line: 0, pattern: 'image-text', excerpt: `${runLines.length} readable run(s) between the image bytes, shown below the file` })
+        scanLines(rel, runLines)
+      }
+      if (findings.length >= MAX_FINDINGS) findingsTruncated = true
+      continue
+    }
     if (reviewed.controlBytes && findings.length < MAX_FINDINGS) {
       findings.push({ file: rel, line: 0, pattern: 'control-bytes', excerpt: `${reviewed.controlBytes} control byte(s), shown as <0xNN> or <U+XXXX>` })
     }
     if (reviewed.invalidUtf8 && findings.length < MAX_FINDINGS) {
       findings.push({ file: rel, line: 0, pattern: 'invalid-utf8', excerpt: `${reviewed.invalidUtf8} byte(s) that are not UTF-8, shown as <0xNN>` })
     }
-    const lines = text.split('\n')
-    for (let i = 0; i < lines.length && findings.length < MAX_FINDINGS; i++) {
-      const line = lines[i]
-      INVISIBLE_RE.lastIndex = 0
-      const inv = INVISIBLE_RE.exec(line)
-      if (inv) findings.push({ file: rel, line: i + 1, pattern: 'invisible-unicode', excerpt: excerpt(line, inv.index) })
-      for (const [name, rx] of SKILL_SCAN_PATTERNS) {
-        const m = rx.exec(line)
-        if (m) findings.push({ file: rel, line: i + 1, pattern: name, excerpt: excerpt(line, m.index) })
-      }
-    }
+    scanLines(rel, text.split('\n'))
     if (findings.length >= MAX_FINDINGS) findingsTruncated = true
   }
   return { files, findings, totalBytes, truncated, findingsTruncated, unreviewable }
