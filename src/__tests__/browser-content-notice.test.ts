@@ -12,7 +12,7 @@
 // hook that exits non-zero turns a labelling aid into a tool failure.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, existsSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, statSync, writeFileSync, chmodSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -251,6 +251,41 @@ describe('browser-content-notice (envelope layer)', () => {
     const run = runHook(mcpPayload('text'))
     const mode = statSync(run.logPath).mode & 0o777
     expect(mode).toBe(0o600)
+  })
+
+  it('caps the log: past the size limit the file moves to .1 and a new one starts, both owner-only', () => {
+    // The hook runs on every WebSearch of every agent (MARVEENGAPS1020 (c)),
+    // so an unbounded log would only grow. One record here is about 1.5 KB.
+    const dir = mkdtempSync(join(tmpdir(), 'bcn-cap-'))
+    const logPath = join(dir, 'browser-content.log')
+    const env = { ...process.env, BROWSER_CONTENT_LOG: logPath, BROWSER_CONTENT_LOG_MAX_BYTES: '4000' }
+    const once = (n: number) => execFileSync('python3', [HOOK], { input: JSON.stringify(mcpPayload(`page ${n} ` + 'x'.repeat(1200))), encoding: 'utf-8', env })
+    once(1); once(2)
+    expect(existsSync(`${logPath}.1`)).toBe(false)
+    once(3)
+    expect(existsSync(`${logPath}.1`)).toBe(true)
+    const current = readFileSync(logPath, 'utf-8').trim().split('\n')
+    expect(current).toHaveLength(1)
+    expect(JSON.parse(current[0]).payload).toContain('page 3')
+    expect(readFileSync(`${logPath}.1`, 'utf-8')).toContain('page 2')
+    expect(statSync(logPath).size).toBeLessThanOrEqual(4000)
+    expect(statSync(logPath).mode & 0o777).toBe(0o600)
+    expect(statSync(`${logPath}.1`).mode & 0o777).toBe(0o600)
+    // one older generation only: the next rotation replaces .1
+    once(4); once(5)
+    expect(readFileSync(`${logPath}.1`, 'utf-8')).not.toContain('page 2')
+  })
+
+  it('a world-readable log from before the mode fix is owner-only once rotated', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bcn-cap-mode-'))
+    const logPath = join(dir, 'browser-content.log')
+    writeFileSync(logPath, 'y'.repeat(5000))
+    chmodSync(logPath, 0o644)
+    execFileSync('python3', [HOOK], {
+      input: JSON.stringify(mcpPayload('text')), encoding: 'utf-8',
+      env: { ...process.env, BROWSER_CONTENT_LOG: logPath, BROWSER_CONTENT_LOG_MAX_BYTES: '4000' },
+    })
+    expect(statSync(`${logPath}.1`).mode & 0o777).toBe(0o600)
   })
 
   it('records which layer it attempted, without claiming success', () => {

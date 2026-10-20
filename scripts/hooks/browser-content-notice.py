@@ -88,6 +88,17 @@ LOG_PATH = Path(os.environ.get("BROWSER_CONTENT_LOG", REPO_ROOT / "store" / "bro
 # below are all short and an injection that hides past this offset also has to
 # survive the model's own attention budget.
 SCAN_LIMIT = 200_000
+# The log keeps every payload, and since MARVEENGAPS1020 (c) the hook runs on
+# every WebSearch of every agent, so it would grow without end. Past this size
+# the current file is moved to <log>.1 (replacing an older .1) and a new one is
+# started: at most about twice this much is kept. A record is at most
+# SCAN_LIMIT characters of payload, far below the cap.
+def _log_max_bytes():
+    try:
+        v = int(os.environ.get("BROWSER_CONTENT_LOG_MAX_BYTES", ""))
+        return v if v > 0 else 10 * 1024 * 1024
+    except ValueError:
+        return 10 * 1024 * 1024
 
 # Our own delimiters, mirrored from src/prompt-safety.ts. Scrubbing every known
 # tag (not just the one we open) means a nested <trusted-peer> inside the page
@@ -296,9 +307,17 @@ def log_record(record):
     """
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+        try:
+            if LOG_PATH.stat().st_size + len(line) > _log_max_bytes():
+                rotated = LOG_PATH.with_name(LOG_PATH.name + ".1")
+                os.replace(LOG_PATH, rotated)
+                os.chmod(rotated, 0o600)
+        except FileNotFoundError:
+            pass
         fd = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            os.write(fd, (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+            os.write(fd, line)
         finally:
             os.close(fd)
         os.chmod(LOG_PATH, 0o600)
