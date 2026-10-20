@@ -41,7 +41,7 @@ level 2  → nem cselekszik magától; üzenetben javasolja, és vár a jóváha
 level 1  → csak listázza/jelzi, semmit nem tesz
 ```
 
-Hiányzó config vagy kulcs esetén a default a 3. szint (a korábbi viselkedés).
+Hiányzó, olvashatatlan config vagy hiányzó kulcs esetén a default az 1. szint (csak jelez): ugyanaz, amit a `seed-config` minden kategóriára szállít. Így egy törölt vagy sérült config nem a legmegengedőbb szintre billenti a feladatot. (A levélkapu, `scripts/hooks/email-approval-gate.py`, ugyanerre a 2. szintet adja: ott a kimenő levél jóváhagyással még elmehet.)
 
 ### Config-séma
 
