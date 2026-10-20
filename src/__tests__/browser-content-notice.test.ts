@@ -275,11 +275,15 @@ describe('browser-content-notice (documented scope)', () => {
     expect(source).toContain('2.1.278')
   })
 
-  it('is opt-in: shipped unregistered, with a reasoned exemption', () => {
-    const settings = readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf-8')
-    expect(settings).not.toContain('browser-content-notice.py')
-    const lint = readFileSync(join(ROOT, 'src', '__tests__', 'hook-registration-completeness.test.ts'), 'utf-8')
-    expect(lint).toContain('browser-content-notice.py')
+  it('is wired by default on WebSearch only (MARVEENGAPS1020 (c)); browser MCP matchers stay operator-wired', () => {
+    // The main agent: the repo-shipped project settings. Sub-agents: the
+    // scaffold (agent-scaffold.ts injectWebSearchEnvelope), pinned in
+    // websearch-envelope-wiring.test.ts.
+    const settings = JSON.parse(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf-8'))
+    const groups = (settings.hooks.PostToolUse as Array<{ matcher?: string; hooks: Array<{ command: string }> }>)
+      .filter((g) => g.hooks.some((h) => h.command.includes('browser-content-notice.py')))
+    // exactly one envelope group, and its matcher is WebSearch: no browser MCP matcher
+    expect(groups.map((g) => g.matcher)).toEqual(['WebSearch'])
   })
 
   it('states the gap in the operator security doc, not only in source', () => {

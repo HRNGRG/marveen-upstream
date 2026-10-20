@@ -260,7 +260,8 @@ runs as a `PreToolUse` hook with matcher `WebFetch`, and `wrapUntrustedFetch()`
 brings the outside world into an agent's context is outside both:
 
 - **`WebSearch`** -- result snippets are external text; no allowlist decided
-  which sites they came from, and nothing wraps them on the way in.
+  which sites they came from. The envelope hook below now frames them on the
+  way in (wired by default since MARVEENGAPS1020); nothing filters them.
 - **Any MCP server that fetches** -- a browser server (playwright, chrome), a
   docs server, an API connector. The agent's own `curl` is denied by
   `BASH_EGRESS_DENY`, but an MCP server makes the request in its own process,
@@ -289,7 +290,7 @@ The defence against that is framing, not filtering: content the agent knows is
 content cannot impersonate an instruction. `WebFetch` gets that framing from
 the wrapper. A browser payload gets none.
 
-## The opt-in envelope hook
+## The envelope hook (default on WebSearch, opt-in for browser MCP servers)
 
 `scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
 browser / search results in an `<untrusted source="..." fetch-nonce="...">`
@@ -300,9 +301,18 @@ names any injection patterns it matched (forged `<untrusted>` /
 overrides, credential targets, exfil shapes) and appends the full payload to
 `store/browser-content.log` for reading outside the model's context.
 
-It is **not registered by default** -- an install with no browser gains nothing
-from it. Operators who run a browser MCP server wire it themselves, in the
-project `settings.json` or `settings.local.json`:
+Since MARVEENGAPS1020 (c) it is **wired by default for `WebSearch`**: in the
+repo-shipped `.claude/settings.json` for the main agent, and by the scaffold
+(`injectWebSearchEnvelope`, with a startup migration for existing agents) for
+every sub-agent. Every agent can call WebSearch: three profiles allow it by
+name, and the permissive ones run with the permission bypass. The hook does
+nothing until WebSearch is called. Its label tells the agent to read and use
+the content's facts and to refuse only its imperatives, so an agent does not
+stop on a round whose content was its job (BORITOOLVASAT921).
+
+A browser MCP server is still **not wired by default**, because an install with
+no browser gains nothing from it. Operators who run one add its matcher
+themselves, in the project `settings.json` or `settings.local.json`:
 
 ```json
 {
