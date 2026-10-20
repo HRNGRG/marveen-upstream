@@ -12,7 +12,7 @@
 // hook that exits non-zero turns a labelling aid into a tool failure.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, existsSync, statSync, writeFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, statSync, writeFileSync, chmodSync, symlinkSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -300,6 +300,70 @@ describe('browser-content-notice (envelope layer)', () => {
     // one older generation only: the next rotation replaces .1
     once(4); once(5)
     expect(readFileSync(`${logPath}.1`, 'utf-8')).not.toContain('page 2')
+  })
+
+  it('the cap is exact: a line that brings the file to exactly the cap is appended, one byte more rotates', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bcn-edge-'))
+    const logPath = join(dir, 'browser-content.log')
+    const run = (max: number) => execFileSync('python3', [HOOK], {
+      input: JSON.stringify(mcpPayload('same page')), encoding: 'utf-8',
+      env: { ...process.env, BROWSER_CONTENT_LOG: logPath, BROWSER_CONTENT_LOG_MAX_BYTES: String(max) },
+    })
+    run(1_000_000)
+    const one = statSync(logPath).size
+    run(2 * one) // exactly the cap: appended
+    expect(existsSync(`${logPath}.1`)).toBe(false)
+    expect(statSync(logPath).size).toBe(2 * one)
+    run(3 * one - 1) // one byte over: rotates
+    expect(existsSync(`${logPath}.1`)).toBe(true)
+    expect(statSync(logPath).size).toBe(one)
+  })
+
+  it('a symlinked log path is refused, the link target is untouched, and the drop leaves a trace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bcn-link-'))
+    const target = join(dir, 'elsewhere.txt')
+    writeFileSync(target, 'keep\n')
+    const logPath = join(dir, 'browser-content.log')
+    symlinkSync(target, logPath)
+    const errlog = join(dir, 'hook-errors.log')
+    const out = execFileSync('python3', [HOOK], {
+      input: JSON.stringify(mcpPayload('text')), encoding: 'utf-8',
+      env: { ...process.env, BROWSER_CONTENT_LOG: logPath, HOOK_ERRLOG_PATH: errlog },
+    })
+    expect(JSON.parse(out).hookSpecificOutput.additionalContext).toContain('[UNTRUSTED-CONTENT') // the label still goes out
+    expect(readFileSync(target, 'utf-8')).toBe('keep\n')
+    expect(readFileSync(errlog, 'utf-8')).toMatch(/\[browser-content-notice\] audit line not written/)
+  })
+
+  it('concurrent writers lose no generation: a slow rotation does not let a second writer rotate on a stale size', () => {
+    // Deterministic, in one python process: writer A's rotation is slowed down,
+    // writer B starts during it. Without the lock B also sees the old size,
+    // rotates A's fresh file over .1, and the previous generation is gone.
+    const dir = mkdtempSync(join(tmpdir(), 'bcn-race-'))
+    const logPath = join(dir, 'browser-content.log')
+    writeFileSync(logPath, 'OLD-GENERATION\n'.repeat(400))
+    const out = execFileSync('python3', ['-c', `
+import importlib.util, json, os, sys, threading, time
+spec = importlib.util.spec_from_file_location("bcn", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real = os.replace
+calls = []
+def slow_replace(a, b):
+    calls.append(1)
+    if len(calls) == 1:
+        time.sleep(0.4)
+    return real(a, b)
+os.replace = slow_replace
+ta = threading.Thread(target=m.log_record, args=({"payload": "A"},))
+tb = threading.Thread(target=m.log_record, args=({"payload": "B"},))
+ta.start(); time.sleep(0.1); tb.start(); ta.join(); tb.join()
+log = sys.argv[2]
+print(json.dumps({"rotated": open(log + ".1").read().count("OLD-GENERATION"), "current": open(log).read()}))
+`, HOOK, logPath], { encoding: 'utf-8', env: { ...process.env, BROWSER_CONTENT_LOG: logPath, BROWSER_CONTENT_LOG_MAX_BYTES: '4000' } })
+    const r = JSON.parse(out.trim().split('\n').pop()!)
+    expect(r.rotated).toBe(400) // the previous generation survives in .1
+    expect(r.current).toContain('"payload": "A"')
+    expect(r.current).toContain('"payload": "B"')
   })
 
   it('a world-readable log from before the mode fix is owner-only once rotated', () => {

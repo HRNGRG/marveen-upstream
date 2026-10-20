@@ -299,7 +299,11 @@ gives the `WebFetch` path -- scrubs forged security tags out of the payload,
 names any injection patterns it matched (forged `<untrusted>` /
 `<system-reminder>` envelopes, a pre-injected scrub sentinel, instruction
 overrides, credential targets, exfil shapes) and appends the full payload to
-`store/browser-content.log` for reading outside the model's context.
+`store/browser-content.log` for reading outside the model's context. The log is
+capped: past `BROWSER_CONTENT_LOG_MAX_BYTES` (default 10 MiB) it moves to
+`browser-content.log.1`, replacing an older one, so at most about twice the cap
+is kept; both files are mode 0600, a symlinked log path is refused, and a
+line that cannot be written leaves a note in `store/hook-errors.log`.
 
 Since MARVEENGAPS1020 (c) it is **wired by default for `WebSearch`**: in the
 repo-shipped `.claude/settings.json` for the main agent, and by the scaffold

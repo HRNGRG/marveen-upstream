@@ -81,6 +81,10 @@ import re
 import sys
 import time
 import secrets
+try:
+    import fcntl  # POSIX: serialises the size check, the rotation and the append
+except ImportError:  # pragma: no cover
+    fcntl = None
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -310,22 +314,44 @@ def log_record(record):
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+        # A symlinked log path is refused: the append would write through the
+        # link wherever it points, and a rotation would move the link, not the
+        # log (#2092 review).
+        if LOG_PATH.is_symlink():
+            raise RuntimeError("log path is a symlink; audit line not written")
+        # Concurrent hooks (several agents searching at once) take turns: the
+        # size check, the rotation and the append happen under one lock, so two
+        # writers cannot both rotate on the same stale size and lose a
+        # generation (#2092 review).
+        lock_fd = os.open(str(LOG_PATH) + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
         try:
-            if LOG_PATH.stat().st_size + len(line) > _log_max_bytes():
-                rotated = LOG_PATH.with_name(LOG_PATH.name + ".1")
-                os.replace(LOG_PATH, rotated)
-                os.chmod(rotated, 0o600)
-        except FileNotFoundError:
-            pass
-        fd = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            os.write(fd, line)
+            if fcntl is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                if LOG_PATH.stat().st_size + len(line) > _log_max_bytes():
+                    rotated = LOG_PATH.with_name(LOG_PATH.name + ".1")
+                    os.replace(LOG_PATH, rotated)
+                    os.chmod(rotated, 0o600)
+            except FileNotFoundError:
+                pass
+            fd = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
+            os.chmod(LOG_PATH, 0o600)
         finally:
-            os.close(fd)
-        os.chmod(LOG_PATH, 0o600)
-    except Exception:
-        # Losing the audit line must not cost the label itself.
-        pass
+            if fcntl is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+    except Exception as exc:
+        # Losing the audit line must not cost the label itself, but it must
+        # leave a trace (SILENTOLLAMA926), not vanish (#2092 review).
+        try:
+            import hook_errlog  # noqa: E402
+            hook_errlog.report("browser-content-notice", "audit line not written to %s; the label was still emitted" % LOG_PATH, exc)
+        except Exception:
+            pass
 
 
 def main():
