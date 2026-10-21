@@ -84,6 +84,10 @@ jobs:
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
+      # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
+      # PATH, every case answers "n" before anything is migrated.
+      - run: bash scripts/__tests__/migrate-agent-id-env-literal.test.sh
       # Same reasoning for the taskstate stub writer: its load-bearing contract
       # is the EXIT CODE (a non-zero UserPromptSubmit hook blocks every prompt),
       # and that is only asserted by this shell suite. The live-API case inside
