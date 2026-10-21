@@ -480,6 +480,28 @@ describe('importFleet: identity takeover', () => {
       expect(warned(result, 'atlas', 'MAIN_AGENT_ID')).toBe(true)
     })
 
+    // FLEETRESERVEDNAME1021: an id the message layer already owns cannot become
+    // the main agent's ('system' is 403'd on every POST, so it could not send).
+    for (const reserved of ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']) {
+      it(`MAIN_AGENT_ID "${reserved}" is reserved: nothing is taken over`, async () => {
+        const { result, env } = await applyWith({ ...IDENTITY, MAIN_AGENT_ID: reserved })
+        expect(env).toBeNull()
+        expect(warned(result, reserved, 'MAIN_AGENT_ID', 'fenntartott')).toBe(true)
+      })
+    }
+
+    it('a reserved id from an older export (agentId only, no identity) is refused too', async () => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const { updateEnvFile } = await import('../env.js')
+      ;(updateEnvFile as any).mockClear()
+      const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+      fleet.mainAgent.agentId = 'system'
+      delete fleet.mainAgent.identity
+      const result = importFleet(JSON.stringify(fleet), { apply: true }) as any
+      expect((updateEnvFile as any).mock.calls).toHaveLength(0)
+      expect(warned(result, 'system', 'fenntartott')).toBe(true)
+    })
+
     it('a CHANNEL_PROVIDER the target has no token for is left out; the rest is taken over', async () => {
       const { result, env } = await applyWith({ ...IDENTITY, CHANNEL_PROVIDER: 'slack' })
       expect(env).not.toBeNull()

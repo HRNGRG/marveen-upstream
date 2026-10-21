@@ -4,7 +4,9 @@
 # writes its identity values there (#2112 takes only the identity keys, but a
 # BOT_NAME of "$(...)" is a valid identity value), so sourcing ran whatever a
 # value held. Every case answers "n" at the confirmation prompt, so nothing is
-# migrated; the test reads the slug the script announces.
+# migrated; the test reads the slug the script announces. The last block
+# (FLEETRESERVEDNAME1021) checks that a reserved id or a sub-agent's name is
+# refused before anything changes.
 # Run: bash scripts/__tests__/migrate-agent-id-env-literal.test.sh
 
 set -u
@@ -74,6 +76,23 @@ run_case inherited 'WEB_PORT=3420' 'BOT_NAME=Hermes'
 [ "$(slug_of)" = "hermes" ] && pass 'no BOT_NAME in .env: the environment value' || fail "inherited: '$(slug_of)'"
 run_case default 'WEB_PORT=3420'
 printf '%s\n' "$OUT" | grep -q 'Nothing to migrate' && pass 'no BOT_NAME anywhere: the default, nothing to migrate' || fail "default: $OUT"
+
+# --- FLEETRESERVEDNAME1021: a reserved id or a sub-agent's name is refused ----------
+# Refused before anything is stopped: exit 1, no "Migrating" line, .env untouched.
+refused() { [ "$RC" -eq 1 ] && ! printf '%s\n' "$OUT" | grep -q '^Migrating' && ! grep -q '^MAIN_AGENT_ID=' "$TMP/$1/.env"; }
+for name in System Heartbeat Telegram-Coordinator 'Channel Coordinator' Hanna; do
+  label="reserved-$(printf '%s' "$name" | tr ' A-Z' '-a-z')"
+  run_case "$label" "BOT_NAME=\"$name\""
+  refused "$label" && printf '%s\n' "$OUT" | grep -q 'reserved by the system' \
+    && pass "BOT_NAME=\"$name\" is refused as a reserved id" || fail "reserved '$name': rc=$RC $OUT"
+done
+mkdir -p "$TMP/subagent/agents/atlas"
+run_case subagent 'BOT_NAME=Atlas'
+refused subagent && printf '%s\n' "$OUT" | grep -q 'already a sub-agent' \
+  && pass "a BOT_NAME whose id is a sub-agent's is refused" || fail "subagent: rc=$RC $OUT"
+mkdir -p "$TMP/defaultsub/agents/marveen"
+run_case defaultsub 'BOT_NAME=Marveen'
+printf '%s\n' "$OUT" | grep -q 'Nothing to migrate' && pass 'the default id is not refused by an agents/marveen dir' || fail "defaultsub: $OUT"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

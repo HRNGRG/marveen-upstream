@@ -20,7 +20,7 @@ import { channelStateDir, readChannelToken, type ChannelProviderType } from '../
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
-import { safeJoin, sanitizeAgentName } from './sanitize.js'
+import { RESERVED_AGENT_IDS, safeJoin, sanitizeAgentName } from './sanitize.js'
 import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
@@ -132,8 +132,9 @@ const CHANNEL_PROVIDER_IDS: readonly ChannelProviderType[] = ['telegram', 'slack
 // FLEETIMPORTFOLLOW1021: what the import would take over, checked against the
 // TARGET, shared by the dry run and the apply so the two never disagree.
 //   - MAIN_AGENT_ID keys tmux sessions, service units and DB rows: it must have
-//     the installer's slug shape (sanitizeAgentName leaves it unchanged) and
-//     must not be the name of a sub-agent, on the target or in this import.
+//     the installer's slug shape (sanitizeAgentName leaves it unchanged),
+//     must not be a reserved id (RESERVED_AGENT_IDS) and must not be the name
+//     of a sub-agent, on the target or in this import.
 //     Otherwise nothing is taken over.
 //   - CHANNEL_PROVIDER switches the main agent's channel, and the import carries
 //     no bot token (re-pair model): a provider the target holds no token for
@@ -154,6 +155,9 @@ export function planIdentityTakeover(fleet: Pick<FleetJson, 'mainAgent' | 'agent
   })
   if (sourceAgentId !== sanitizeAgentName(sourceAgentId)) {
     return refuse('nem slug alakú (kisbetű, számjegy, egyszeres kötőjel, legfeljebb 50 karakter, ahogy a telepítő képzi)')
+  }
+  if (RESERVED_AGENT_IDS.includes(sourceAgentId)) {
+    return refuse('a rendszer fenntartott azonosítója (az üzenetkezelő saját feladója)')
   }
   const subAgents = new Set([...listAgentNames(), ...(fleet.agents ?? []).map(a => String(a.name))])
   if (subAgents.has(sourceAgentId)) return refuse('egy al-ügynök neve ezen a gépen vagy ebben az importban')

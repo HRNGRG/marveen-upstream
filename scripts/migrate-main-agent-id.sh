@@ -63,6 +63,24 @@ print(s or 'marveen')
 PYEOF
 )
 
+# An id the message layer already owns, or a sub-agent's name, cannot become the
+# main agent's (FLEETRESERVEDNAME1021): 'system' is refused on every POST, so a
+# main agent named that could not send. Checked before anything is stopped.
+# The list is RESERVED_AGENT_IDS in src/web/sanitize.ts; a test keeps them equal.
+RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator hanna"
+case " $RESERVED_AGENT_IDS " in
+  *" $NEW_SLUG "*)
+    echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is reserved by the system." >&2
+    echo "Nothing was changed. Set another BOT_NAME in .env and rerun." >&2
+    exit 1 ;;
+esac
+# "marveen" is the id the install already runs under: nothing to rename there.
+if [ "$NEW_SLUG" != "marveen" ] && [ -d "$INSTALL_DIR/agents/$NEW_SLUG" ]; then
+  echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is already a sub-agent (agents/$NEW_SLUG)." >&2
+  echo "Nothing was changed. Set another BOT_NAME in .env and rerun." >&2
+  exit 1
+fi
+
 if [ "$NEW_SLUG" = "marveen" ]; then
   echo "BOT_NAME=\"$BOT_NAME\" → slug \"marveen\" (default). Nothing to migrate."
   # Still write MAIN_AGENT_ID into .env for forward compatibility if missing.
