@@ -565,6 +565,14 @@ What happens now:
   when the target already holds a token for that channel (the import carries
   none), or when it is the target's own provider; otherwise that key alone is
   left out, with a warning.
+- `MAIN_AGENT_ID` must also not be an id the message layer owns
+  (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/web/sanitize.ts`):
+  `system` is refused on every POST, so a main agent with that id could not
+  send, and `hanna` is accepted only from a device key and framed as the owner.
+  `scripts/migrate-main-agent-id.sh` refuses the same ids, and a `BOT_NAME`
+  whose id is already a sub-agent, before it stops anything. The installers
+  (`install-macos.sh`, `install-linux.sh`) derive the id from `BOT_NAME`
+  without this check.
 
 **Not covered, stated out loud:** the rest of the import (agent files, settings,
 the vault, scheduled tasks) still writes with the same shared token, and on a
