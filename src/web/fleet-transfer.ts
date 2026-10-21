@@ -89,6 +89,44 @@ export interface FleetIdentity {
   CHANNEL_PROVIDER: string
 }
 
+// FLEETIMPORTENVKEY1021: the keys an import may take over, exactly the ones
+// exportMainAgent() writes. The import is reachable with the fleet's one shared
+// token, and .env also holds keys that decide what an agent may do (SUDO_AGENTS),
+// so the takeover is never generic over whatever the file brings.
+export const FLEET_IDENTITY_KEYS: readonly (keyof FleetIdentity)[] =
+  ['MAIN_AGENT_ID', 'BOT_NAME', 'BRAND_NAME', 'OWNER_NAME', 'CHANNEL_PROVIDER']
+
+// updateEnvFile writes KEY=value unquoted, one per line: a control character
+// in a value would start a line of its own. Such a value is left out, not cleaned.
+const IDENTITY_VALUE_BAD_RE = /[\u0000-\u001f\u007f]/
+
+// The identity an import takes over, and the keys it leaves out (named in a
+// warning). An export from before the identity field carries agentId only.
+export function importedIdentity(main: Partial<MainAgentExport> | undefined): { identity: Record<string, string>; ignored: string[] } {
+  const identity: Record<string, string> = {}
+  const ignored: string[] = []
+  const take = (key: string, val: unknown) => {
+    if (typeof val !== 'string' || val.length === 0) return
+    if (IDENTITY_VALUE_BAD_RE.test(val)) ignored.push(key)
+    else identity[key] = val
+  }
+  const src = main?.identity
+  if (src && typeof src === 'object') {
+    for (const [key, val] of Object.entries(src)) {
+      if ((FLEET_IDENTITY_KEYS as readonly string[]).includes(key)) take(key, val)
+      else ignored.push(key)
+    }
+  } else {
+    take('MAIN_AGENT_ID', main?.agentId)
+  }
+  return { identity, ignored }
+}
+
+function identityIgnoredWarning(ignored: string[]): string {
+  return `Fő-agent identitás: kimaradt kulcs(ok): ${ignored.map(k => k.slice(0, 60)).join(', ')}. ` +
+    `Csak ${FLEET_IDENTITY_KEYS.join(', ')} vehető át, vezérlőkarakter nélküli értékkel.`
+}
+
 // Main agent lives at PROJECT_ROOT (not under agents/), so it needs its own export section.
 export interface MainAgentExport {
   agentId: string  // source MAIN_AGENT_ID -- kept for backward-compat; identity supersedes this
@@ -887,8 +925,11 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
   }
 
   // Identity takeover preview
-  const drySourceId = fleet.mainAgent?.identity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
-  if (drySourceId && typeof drySourceId === 'string') {
+  const dryIdentity = importedIdentity(fleet.mainAgent)
+  if (dryIdentity.ignored.length > 0) warnings.push(identityIgnoredWarning(dryIdentity.ignored))
+  const drySourceId = dryIdentity.ignored.includes('MAIN_AGENT_ID') ? undefined
+    : dryIdentity.identity.MAIN_AGENT_ID ?? importedIdentity({ agentId: fleet.mainAgent?.agentId }).identity.MAIN_AGENT_ID
+  if (drySourceId) {
     warnings.push(
       `Fő-agent identitás átvéve: ${drySourceId}. Apply után újraindítás szükséges hogy a dashboard ${drySourceId}-ként induljon.`
     )
@@ -1295,26 +1336,22 @@ export function importFleet(
     // Preference: use identity object (full set) if present; fall back to agentId-only for
     // exports produced before the identity field was added.
     const applyWarnings: string[] = []
-    const sourceIdentity = fleet.mainAgent?.identity
-    const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
-    if (sourceAgentId && typeof sourceAgentId === 'string') {
+    const { identity: takeover, ignored } = importedIdentity(fleet.mainAgent)
+    if (ignored.length > 0) applyWarnings.push(identityIgnoredWarning(ignored))
+    // An identity without MAIN_AGENT_ID still names the source by agentId (same check);
+    // one whose MAIN_AGENT_ID was left out takes over nothing.
+    const sourceAgentId = ignored.includes('MAIN_AGENT_ID') ? undefined
+      : takeover.MAIN_AGENT_ID ?? importedIdentity({ agentId: fleet.mainAgent?.agentId }).identity.MAIN_AGENT_ID
+    if (sourceAgentId) {
       const overridesPath = join(STORE_DIR, 'config-overrides.json')
       // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not
       // replaced by the identity keys alone (it holds every dashboard setting).
       // The throw takes the import's own failure path below: tracked writes are
       // cleaned up and the error names the file.
       const overrides = readJsonObjectForWrite(overridesPath)
-      if (sourceIdentity && typeof sourceIdentity === 'object') {
-        // Full identity takeover: iterate all keys generically (no hardcoded names)
-        for (const [key, val] of Object.entries(sourceIdentity)) {
-          if (typeof val === 'string' && val.length > 0) {
-            overrides[key] = val
-          }
-        }
-      } else {
-        // Backward-compat: old export without identity -- only set MAIN_AGENT_ID
-        overrides['MAIN_AGENT_ID'] = sourceAgentId
-      }
+      // Only the identity keys (FLEETIMPORTENVKEY1021); an export without the
+      // identity field gives MAIN_AGENT_ID alone.
+      Object.assign(overrides, takeover)
       atomicWriteFileSync(overridesPath, JSON.stringify(overrides, null, 2))
 
       // Mirror the identity into .env as well. The dashboard reads identity via
@@ -1323,15 +1360,7 @@ export function importFleet(
       // DIRECTLY from .env. Without this the main agent would launch under the
       // pre-import identity (`${old-id}-channels`) while the dashboard looks for
       // `${new-id}-channels` and reports the main agent as down.
-      const envIdentity: Record<string, string> = {}
-      if (sourceIdentity && typeof sourceIdentity === 'object') {
-        for (const [key, val] of Object.entries(sourceIdentity)) {
-          if (typeof val === 'string' && val.length > 0) envIdentity[key] = val
-        }
-      } else {
-        envIdentity['MAIN_AGENT_ID'] = sourceAgentId
-      }
-      updateEnvFile(envIdentity)
+      updateEnvFile(takeover)
 
       applyWarnings.push(
         `Fő-agent identitás átvéve: ${sourceAgentId}. Újraindítás kell hogy a dashboard ${sourceAgentId}-ként induljon.`

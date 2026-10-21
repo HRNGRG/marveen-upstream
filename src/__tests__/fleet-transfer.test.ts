@@ -347,6 +347,80 @@ describe('importFleet: identity takeover', () => {
     expect(readJsonObjectForWriteMock).toHaveBeenCalledWith(expect.stringContaining('config-overrides.json'))
   })
 
+  // FLEETIMPORTENVKEY1021: the import is reachable with the fleet's one shared
+  // token, and its identity mirror wrote EVERY key of mainAgent.identity into
+  // .env and config-overrides.json. .env also holds keys that decide what an
+  // agent may do (SUDO_AGENTS, #2101), so an import could set any of them.
+  // Only the identity keys the export writes may come in, and a value that
+  // would start a new .env line is not written at all.
+  const withIdentity = (identity: Record<string, unknown>): string => {
+    const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+    fleet.mainAgent.identity = identity
+    return JSON.stringify(fleet)
+  }
+  const lastEnvWrite = async (): Promise<Record<string, string>> => {
+    const { updateEnvFile } = await import('../env.js')
+    return (updateEnvFile as any).mock.calls.at(-1)[0]
+  }
+  const lastOverridesWrite = async (): Promise<Record<string, unknown>> => {
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    const calls = (atomicWriteFileSync as any).mock.calls.filter((c: string[]) => c[0]?.includes('config-overrides.json'))
+    return JSON.parse(calls.at(-1)[1])
+  }
+  const IDENTITY = { MAIN_AGENT_ID: 'atlas', BOT_NAME: 'Atlas', BRAND_NAME: 'Atlas', OWNER_NAME: 'Norbert', CHANNEL_PROVIDER: 'telegram' }
+
+  it('a non-identity key in the identity (SUDO_AGENTS, or any other) reaches neither .env nor config-overrides', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const result = importFleet(withIdentity({ ...IDENTITY, SUDO_AGENTS: 'dani', ANTHROPIC_BASE_URL: 'http://evil.example' }), { apply: true }) as any
+    const env = await lastEnvWrite()
+    const overrides = await lastOverridesWrite()
+    expect(env).toEqual(IDENTITY)
+    for (const key of ['SUDO_AGENTS', 'ANTHROPIC_BASE_URL']) {
+      expect(env).not.toHaveProperty(key)
+      expect(overrides).not.toHaveProperty(key)
+    }
+    expect(overrides).toMatchObject(IDENTITY)
+    // The operator is told what was left out, by name.
+    expect(result.warnings.some((w: string) => w.includes('SUDO_AGENTS') && w.includes('ANTHROPIC_BASE_URL'))).toBe(true)
+  })
+
+  it('an identity value with a line break is not written (it would add its own .env line)', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    importFleet(withIdentity({ ...IDENTITY, BOT_NAME: 'Atlas\nSUDO_AGENTS=dani', OWNER_NAME: 'Norbert\rX=1' }), { apply: true })
+    const env = await lastEnvWrite()
+    const overrides = await lastOverridesWrite()
+    expect(env).not.toHaveProperty('BOT_NAME')
+    expect(env).not.toHaveProperty('OWNER_NAME')
+    expect(overrides).not.toHaveProperty('OWNER_NAME')
+    for (const v of Object.values(env)) expect(v).not.toMatch(/[\r\n]/)
+    expect(env.MAIN_AGENT_ID).toBe('atlas')
+  })
+
+  it('an old export (agentId only) with a line break in the id takes over nothing', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    ;(updateEnvFile as any).mockClear()
+    const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+    delete fleet.mainAgent.identity
+    fleet.mainAgent.agentId = 'atlas\nSUDO_AGENTS=dani'
+    importFleet(JSON.stringify(fleet), { apply: true })
+    expect(updateEnvFile as any).not.toHaveBeenCalled()
+  })
+
+  it('an identity whose MAIN_AGENT_ID has a line break takes over nothing (no fallback to agentId)', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { updateEnvFile } = await import('../env.js')
+    ;(updateEnvFile as any).mockClear()
+    importFleet(withIdentity({ ...IDENTITY, MAIN_AGENT_ID: 'atlas\nSUDO_AGENTS=dani' }), { apply: true })
+    expect(updateEnvFile as any).not.toHaveBeenCalled()
+  })
+
+  it('the dry run names the identity keys the apply would leave out', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const result = importFleet(withIdentity({ ...IDENTITY, SUDO_AGENTS: 'dani' }), { apply: false }) as any
+    expect(result.warnings.some((w: string) => w.includes('SUDO_AGENTS'))).toBe(true)
+  })
+
   it('dry-run counts both atlas and hestia memories (no remap dedup)', async () => {
     // If remap were active (atlas -> marveen), duplicate dedup could collapse rows.
     // With original agent_ids preserved, all 2 memories count as new.

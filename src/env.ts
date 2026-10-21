@@ -27,6 +27,8 @@ export function readEnvFile(keys?: string[]): Record<string, string> {
 // install-linux.sh chmod it to 600.
 export const ENV_FILE_MODE = 0o600
 
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 // Update (or append) the given keys in .env, preserving every other line,
 // comment, and the original ordering. Used by fleet import to mirror the
 // main-agent identity takeover into .env: the dashboard resolves identity via
@@ -45,6 +47,13 @@ export function updateEnvFile(updates: Record<string, string>): void {
     ([, v]) => typeof v === 'string' && v.length > 0,
   )
   if (entries.length === 0) return
+  // FLEETIMPORTENVKEY1021: values are written unquoted, one KEY=value per line,
+  // so a line break (or NUL) in a value, or a key that is not a plain env name,
+  // would add a line of the caller's choosing. Refused before the file is read.
+  for (const [key, val] of entries) {
+    if (!ENV_KEY_RE.test(key)) throw new Error(`refusing to write .env: ${JSON.stringify(key)} is not an env key name`)
+    if (/[\r\n\0]/.test(val)) throw new Error(`refusing to write .env: the value of ${key} holds a line break or NUL`)
+  }
 
   let content = ''
   try {
