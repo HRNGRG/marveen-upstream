@@ -16,11 +16,11 @@ import {
   randomBytes, createCipheriv, createDecipheriv, scryptSync,
 } from 'node:crypto'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
-import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
-import { safeJoin } from './sanitize.js'
+import { safeJoin, sanitizeAgentName } from './sanitize.js'
 import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
@@ -125,6 +125,49 @@ export function importedIdentity(main: Partial<MainAgentExport> | undefined): { 
 function identityIgnoredWarning(ignored: string[]): string {
   return `Fő-agent identitás: kimaradt kulcs(ok): ${ignored.map(k => k.slice(0, 60)).join(', ')}. ` +
     `Csak ${FLEET_IDENTITY_KEYS.join(', ')} vehető át, vezérlőkarakter nélküli értékkel.`
+}
+
+const CHANNEL_PROVIDER_IDS: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+
+// FLEETIMPORTFOLLOW1021: what the import would take over, checked against the
+// TARGET, shared by the dry run and the apply so the two never disagree.
+//   - MAIN_AGENT_ID keys tmux sessions, service units and DB rows: it must have
+//     the installer's slug shape (sanitizeAgentName leaves it unchanged) and
+//     must not be the name of a sub-agent, on the target or in this import.
+//     Otherwise nothing is taken over.
+//   - CHANNEL_PROVIDER switches the main agent's channel, and the import carries
+//     no bot token (re-pair model): a provider the target holds no token for
+//     would leave the main agent down, so only that key is left out. The
+//     target's own provider stays takeable (nothing changes).
+export function planIdentityTakeover(fleet: Pick<FleetJson, 'mainAgent' | 'agents'>):
+    { identity: Record<string, string>; sourceAgentId?: string; warnings: string[] } {
+  const { identity, ignored } = importedIdentity(fleet.mainAgent)
+  const warnings = ignored.length > 0 ? [identityIgnoredWarning(ignored)] : []
+  // An identity without MAIN_AGENT_ID still names the source by agentId (same check);
+  // one whose MAIN_AGENT_ID was left out takes over nothing.
+  const sourceAgentId = ignored.includes('MAIN_AGENT_ID') ? undefined
+    : identity.MAIN_AGENT_ID ?? importedIdentity({ agentId: fleet.mainAgent?.agentId }).identity.MAIN_AGENT_ID
+  if (!sourceAgentId) return { identity: {}, warnings }
+  const refuse = (why: string) => ({
+    identity: {},
+    warnings: [...warnings, `Fő-agent identitás NEM vehető át: a MAIN_AGENT_ID "${sourceAgentId.slice(0, 60)}" ${why}.`],
+  })
+  if (sourceAgentId !== sanitizeAgentName(sourceAgentId)) {
+    return refuse('nem slug alakú (kisbetű, számjegy, egyszeres kötőjel, legfeljebb 50 karakter, ahogy a telepítő képzi)')
+  }
+  const subAgents = new Set([...listAgentNames(), ...(fleet.agents ?? []).map(a => String(a.name))])
+  if (subAgents.has(sourceAgentId)) return refuse('egy al-ügynök neve ezen a gépen vagy ebben az importban')
+  const provider = identity.CHANNEL_PROVIDER
+  if (provider !== undefined && provider !== CHANNEL_PROVIDER) {
+    const known = (CHANNEL_PROVIDER_IDS as readonly string[]).includes(provider)
+    if (!known || readChannelToken(provider as ChannelProviderType, join(channelStateDir(provider as ChannelProviderType), '.env')) == null) {
+      delete identity.CHANNEL_PROVIDER
+      warnings.push(`Fő-agent identitás: a CHANNEL_PROVIDER "${provider.slice(0, 60)}" kimaradt, mert ` +
+        (known ? 'ezen a gépen nincs hozzá token. Előbb állítsd be a csatornát, utána válts.' : 'ismeretlen csatorna.') +
+        ` Marad: ${CHANNEL_PROVIDER}.`)
+    }
+  }
+  return { identity, sourceAgentId, warnings }
 }
 
 // Main agent lives at PROJECT_ROOT (not under agents/), so it needs its own export section.
@@ -925,10 +968,9 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
   }
 
   // Identity takeover preview
-  const dryIdentity = importedIdentity(fleet.mainAgent)
-  if (dryIdentity.ignored.length > 0) warnings.push(identityIgnoredWarning(dryIdentity.ignored))
-  const drySourceId = dryIdentity.ignored.includes('MAIN_AGENT_ID') ? undefined
-    : dryIdentity.identity.MAIN_AGENT_ID ?? importedIdentity({ agentId: fleet.mainAgent?.agentId }).identity.MAIN_AGENT_ID
+  const dryPlan = planIdentityTakeover(fleet)
+  warnings.push(...dryPlan.warnings)
+  const drySourceId = dryPlan.sourceAgentId
   if (drySourceId) {
     warnings.push(
       `Fő-agent identitás átvéve: ${drySourceId}. Apply után újraindítás szükséges hogy a dashboard ${drySourceId}-ként induljon.`
@@ -1336,12 +1378,8 @@ export function importFleet(
     // Preference: use identity object (full set) if present; fall back to agentId-only for
     // exports produced before the identity field was added.
     const applyWarnings: string[] = []
-    const { identity: takeover, ignored } = importedIdentity(fleet.mainAgent)
-    if (ignored.length > 0) applyWarnings.push(identityIgnoredWarning(ignored))
-    // An identity without MAIN_AGENT_ID still names the source by agentId (same check);
-    // one whose MAIN_AGENT_ID was left out takes over nothing.
-    const sourceAgentId = ignored.includes('MAIN_AGENT_ID') ? undefined
-      : takeover.MAIN_AGENT_ID ?? importedIdentity({ agentId: fleet.mainAgent?.agentId }).identity.MAIN_AGENT_ID
+    const { identity: takeover, sourceAgentId, warnings: identityWarnings } = planIdentityTakeover(fleet)
+    applyWarnings.push(...identityWarnings)
     if (sourceAgentId) {
       const overridesPath = join(STORE_DIR, 'config-overrides.json')
       // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not

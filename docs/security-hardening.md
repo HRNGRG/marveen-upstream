@@ -558,6 +558,13 @@ What happens now:
   apply result.
 - `updateEnvFile` itself refuses a value with CR, LF or NUL, and a key that is
   not a plain env name, before it reads the file.
+- The identity is checked against the target (FLEETIMPORTFOLLOW1021), in the
+  dry run and the apply alike. `MAIN_AGENT_ID` must have the installer's slug
+  shape and must not be the name of a sub-agent, on the target or in the same
+  import; otherwise nothing is taken over. `CHANNEL_PROVIDER` is taken over only
+  when the target already holds a token for that channel (the import carries
+  none), or when it is the target's own provider; otherwise that key alone is
+  left out, with a warning.
 
 **Not covered, stated out loud:** the rest of the import (agent files, settings,
 the vault, scheduled tasks) still writes with the same shared token, and on a

@@ -66,9 +66,10 @@ vi.mock('../db.js', () => ({
 // readJsonObjectForWrite mirrors the real helper for a MISSING file ({}),
 // consistent with the existsSync mock below; one test swaps in a refusal.
 const readJsonObjectForWriteMock = vi.fn((_path: string): Record<string, unknown> => ({}))
+const listAgentNamesMock = vi.hoisted(() => vi.fn((): string[] => []))
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
-  listAgentNames: () => [],
+  listAgentNames: () => listAgentNamesMock(),
   readJsonObjectForWrite: (path: string) => readJsonObjectForWriteMock(path),
 }))
 
@@ -83,6 +84,13 @@ vi.mock('node:fs', async (importOriginal) => {
     readdirSync: () => [],
   }
 })
+
+// The target's channel token, by provider (FLEETIMPORTFOLLOW1021): none unless a test sets one.
+const channelTokenMock = vi.hoisted(() => vi.fn((_provider: string, _envPath: string): string | null => null))
+vi.mock('../channel-provider.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../channel-provider.js')>()),
+  readChannelToken: (provider: string, envPath: string) => channelTokenMock(provider, envPath),
+}))
 
 vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: vi.fn(),
@@ -419,6 +427,94 @@ describe('importFleet: identity takeover', () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
     const result = importFleet(withIdentity({ ...IDENTITY, SUDO_AGENTS: 'dani' }), { apply: false }) as any
     expect(result.warnings.some((w: string) => w.includes('SUDO_AGENTS'))).toBe(true)
+  })
+
+  // FLEETIMPORTFOLLOW1021 (Samu's review of #2112): the identity is checked
+  // against the TARGET before it is taken over. MAIN_AGENT_ID keys tmux
+  // sessions, unit names and DB rows, so it must have the installer's slug
+  // shape and must not be a sub-agent's name; CHANNEL_PROVIDER switches the
+  // main agent's channel, and the import carries no bot token (re-pair model),
+  // so a provider the target has no token for would leave the main agent down.
+  describe('the identity is checked against the target', () => {
+    beforeEach(() => {
+      listAgentNamesMock.mockReset().mockImplementation(() => [])
+      channelTokenMock.mockReset().mockImplementation(() => null)
+    })
+    const applyWith = async (identity: Record<string, unknown>, agents: unknown[] = []) => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const { updateEnvFile } = await import('../env.js')
+      ;(updateEnvFile as any).mockClear()
+      const fleet = JSON.parse(withIdentity(identity))
+      fleet.agents = agents
+      const result = importFleet(JSON.stringify(fleet), { apply: true }) as any
+      const calls = (updateEnvFile as any).mock.calls
+      return { result, env: calls.length ? calls.at(-1)[0] as Record<string, string> : null }
+    }
+    const warned = (result: any, ...parts: string[]) =>
+      result.warnings.some((w: string) => parts.every(p => w.includes(p)))
+
+    for (const bad of ['Atlas', 'atlas bot', '../atlas', 'atlas_', '-atlas', 'atlas-', 'at--las', 'a'.repeat(51)]) {
+      it(`MAIN_AGENT_ID ${JSON.stringify(bad.slice(0, 12))} is not slug-shaped: nothing is taken over`, async () => {
+        const { result, env } = await applyWith({ ...IDENTITY, MAIN_AGENT_ID: bad })
+        expect(env).toBeNull()
+        expect(warned(result, 'MAIN_AGENT_ID')).toBe(true)
+      })
+    }
+
+    it('a slug-shaped MAIN_AGENT_ID is taken over (control)', async () => {
+      const { env } = await applyWith({ ...IDENTITY, MAIN_AGENT_ID: 'atlas-2' })
+      expect(env?.MAIN_AGENT_ID).toBe('atlas-2')
+    })
+
+    it('MAIN_AGENT_ID equal to an existing sub-agent of the target: nothing is taken over', async () => {
+      listAgentNamesMock.mockImplementation(() => ['samu', 'atlas'])
+      const { result, env } = await applyWith(IDENTITY)
+      expect(env).toBeNull()
+      expect(warned(result, 'atlas', 'MAIN_AGENT_ID')).toBe(true)
+    })
+
+    it('MAIN_AGENT_ID equal to a sub-agent the same import brings: nothing is taken over', async () => {
+      const agent = { name: 'atlas', config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [] }
+      const { result, env } = await applyWith(IDENTITY, [agent])
+      expect(env).toBeNull()
+      expect(warned(result, 'atlas', 'MAIN_AGENT_ID')).toBe(true)
+    })
+
+    it('a CHANNEL_PROVIDER the target has no token for is left out; the rest is taken over', async () => {
+      const { result, env } = await applyWith({ ...IDENTITY, CHANNEL_PROVIDER: 'slack' })
+      expect(env).not.toBeNull()
+      expect(env).not.toHaveProperty('CHANNEL_PROVIDER')
+      expect(env?.MAIN_AGENT_ID).toBe('atlas')
+      expect(warned(result, 'CHANNEL_PROVIDER', 'slack')).toBe(true)
+      // The token is looked up where the main agent's channel reads it.
+      expect(channelTokenMock).toHaveBeenCalledWith('slack', expect.stringMatching(/channels[\\/]slack[\\/]\.env$/))
+    })
+
+    it('a CHANNEL_PROVIDER the target holds a token for is taken over', async () => {
+      channelTokenMock.mockImplementation((p: string) => (p === 'slack' ? 'xoxb-test' : null))
+      const { env } = await applyWith({ ...IDENTITY, CHANNEL_PROVIDER: 'slack' })
+      expect(env?.CHANNEL_PROVIDER).toBe('slack')
+    })
+
+    it('an unknown CHANNEL_PROVIDER is left out even if a lookup would answer', async () => {
+      channelTokenMock.mockImplementation(() => 'anything')
+      const { result, env } = await applyWith({ ...IDENTITY, CHANNEL_PROVIDER: 'irc' })
+      expect(env).not.toHaveProperty('CHANNEL_PROVIDER')
+      expect(warned(result, 'CHANNEL_PROVIDER', 'irc')).toBe(true)
+    })
+
+    it("the target's own provider stays takeable without a token (nothing changes)", async () => {
+      const { env } = await applyWith(IDENTITY)   // telegram = the mocked current provider
+      expect(env?.CHANNEL_PROVIDER).toBe('telegram')
+    })
+
+    it('the dry run shows the same verdicts', async () => {
+      listAgentNamesMock.mockImplementation(() => ['atlas'])
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const dry = importFleet(withIdentity({ ...IDENTITY, CHANNEL_PROVIDER: 'slack' }), { apply: false }) as any
+      expect(warned(dry, 'atlas', 'MAIN_AGENT_ID')).toBe(true)
+      expect(dry.warnings.some((w: string) => w.includes('identitás átvéve'))).toBe(false)
+    })
   })
 
   it('dry-run counts both atlas and hestia memories (no remap dedup)', async () => {
