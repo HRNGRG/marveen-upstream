@@ -473,6 +473,22 @@ describe('importFleet: identity takeover', () => {
       expect(warned(result, 'atlas', 'MAIN_AGENT_ID')).toBe(true)
     })
 
+    // Samu's #2119 review: a stray agents/<own id> directory on the target (agents/marveen
+    // drafts) made a re-import of the target's own identity read as a collision.
+    it("the target's own MAIN_AGENT_ID with a stray agents/<id> directory is still taken over", async () => {
+      listAgentNamesMock.mockImplementation(() => ['samu', 'marveen'])   // 'marveen' = the mocked MAIN_AGENT_ID
+      const { result, env } = await applyWith({ ...IDENTITY, MAIN_AGENT_ID: 'marveen' })
+      expect(env?.MAIN_AGENT_ID).toBe('marveen')
+      expect(warned(result, 'NEM vehető át')).toBe(false)
+    })
+
+    it("the target's own MAIN_AGENT_ID is still refused when the import itself brings a sub-agent of that name", async () => {
+      const agent = { name: 'marveen', config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [] }
+      const { result, env } = await applyWith({ ...IDENTITY, MAIN_AGENT_ID: 'marveen' }, [agent])
+      expect(env).toBeNull()
+      expect(warned(result, 'marveen', 'MAIN_AGENT_ID')).toBe(true)
+    })
+
     it('MAIN_AGENT_ID equal to a sub-agent the same import brings: nothing is taken over', async () => {
       const agent = { name: 'atlas', config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [] }
       const { result, env } = await applyWith(IDENTITY, [agent])

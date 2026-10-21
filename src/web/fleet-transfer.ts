@@ -159,7 +159,12 @@ export function planIdentityTakeover(fleet: Pick<FleetJson, 'mainAgent' | 'agent
   if (RESERVED_AGENT_IDS.includes(sourceAgentId)) {
     return refuse('a rendszer fenntartott azonosítója (az üzenetkezelő saját feladója)')
   }
-  const subAgents = new Set([...listAgentNames(), ...(fleet.agents ?? []).map(a => String(a.name))])
+  // The target's own MAIN_AGENT_ID is never a sub-agent there: the main agent lives in
+  // PROJECT_ROOT, and the agent API refuses that name. A directory with it is a stray
+  // (agents/marveen drafts on a host), and re-importing the id the target already runs
+  // under changes nothing, so it does not count. A sub-agent the import brings still does.
+  const onTarget = listAgentNames().filter(n => n !== MAIN_AGENT_ID)
+  const subAgents = new Set([...onTarget, ...(fleet.agents ?? []).map(a => String(a.name))])
   if (subAgents.has(sourceAgentId)) return refuse('egy al-ügynök neve ezen a gépen vagy ebben az importban')
   const provider = identity.CHANNEL_PROVIDER
   if (provider !== undefined && provider !== CHANNEL_PROVIDER) {
