@@ -54,10 +54,12 @@ run_case otherkey "$(printf 'BOT_NAME="Test Bot"\nOWNER_NAME=$(touch %s)' "$MARK
 [ "$(slug_of)" = "test-bot" ] && pass "BOT_NAME still read next to it" || fail "slug '$(slug_of)'"
 
 # --- the value shapes source used to accept still read the same --------------------
+# The slug drops quotes anyway, so the value itself is read off the announce line.
+named() { printf '%s\n' "$OUT" | grep -qF "(BOT_NAME=\"$1\")"; }
 run_case dq 'BOT_NAME="Test Bot"'
-[ "$(slug_of)" = "test-bot" ] && pass 'double-quoted value' || fail "double-quoted: '$(slug_of)'"
+[ "$(slug_of)" = "test-bot" ] && named 'Test Bot' && pass 'double-quoted value' || fail "double-quoted: '$(slug_of)' $OUT"
 run_case sq "BOT_NAME='Test Bot'"
-[ "$(slug_of)" = "test-bot" ] && pass 'single-quoted value' || fail "single-quoted: '$(slug_of)'"
+[ "$(slug_of)" = "test-bot" ] && named 'Test Bot' && pass 'single-quoted value' || fail "single-quoted: '$(slug_of)' $OUT"
 run_case bare 'BOT_NAME=Atlas'
 [ "$(slug_of)" = "atlas" ] && pass 'bare value' || fail "bare: '$(slug_of)'"
 run_case export 'export BOT_NAME=Atlas'
