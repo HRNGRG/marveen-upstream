@@ -46,6 +46,7 @@ import { loadCustomProvider, type CustomProviderDef } from './custom-providers.j
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { worksourceRootFor } from './worksource-queue.js'
+import { syncBashSandboxSettings } from './bash-sandbox.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
@@ -2059,6 +2060,26 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   }
   const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null
 
+  // BASHSANDBOX1022: an agent on the owner's BASH_SANDBOX_AGENTS list runs its Bash in Claude Code's
+  // sandbox, configured by a --settings file this start writes (see bash-sandbox.ts). Fail closed: a
+  // listed agent that cannot get its file, or runs on a remote host the file cannot follow, is not
+  // started -- starting it unsandboxed would turn the switch into a label.
+  let bashSandboxFlag = ''
+  try {
+    const sandboxFile = syncBashSandboxSettings(name)
+    if (sandboxFile) {
+      if (remote.host && remote.workdir) {
+        logger.error({ name }, 'bash-sandbox: agent NOT started (listed in BASH_SANDBOX_AGENTS, but remote agents cannot be sandboxed)')
+        return { ok: false, error: 'bash-sandbox: a remote agent cannot be sandboxed; take it off BASH_SANDBOX_AGENTS' }
+      }
+      bashSandboxFlag = ` --settings ${shSingleQuote(sandboxFile)}`
+      logger.info({ name, path: sandboxFile }, 'bash-sandbox: agent starts with its Bash sandbox settings')
+    }
+  } catch (err) {
+    logger.error({ err, name }, 'bash-sandbox: agent NOT started (fail-closed, its sandbox settings could not be written)')
+    return { ok: false, error: `bash-sandbox: ${err instanceof Error ? err.message : String(err)}` }
+  }
+
   if (remote.host && remote.workdir) {
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
@@ -2810,7 +2831,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
     // Homebrew one that carries no packages.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start

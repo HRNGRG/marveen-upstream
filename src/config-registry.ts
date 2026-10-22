@@ -82,6 +82,14 @@ export interface SettingDefinition {
    * validateSettingValue (SECSZIVEK1007).
    */
   validate?: (value: string) => string | null
+  /**
+   * Optional: does changing `oldValue` to `newValue` LOOSEN a security control? When it does, the
+   * settings route refuses the change from a fleet-token caller (the shared Bearer every agent
+   * holds) and accepts it only from an owner session or a full-scope device key; tightening stays
+   * open to everyone. The token cannot tell the owner from an agent, so without this an agent the
+   * control constrains could switch it off for itself (BASHSANDBOX1022 security review).
+   */
+  loosens?: (oldValue: string, newValue: string) => boolean
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -723,6 +731,21 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: 'boolean',
     default: '0',
     description: 'Bash-letöltés hoszt szerint (curl https:// és wget). Kikapcsolva (alapértelmezés) a "Bash(curl *https://*)" és "Bash(wget *)" deny-szabályok minden ágensen tiltják ezt a két parancsot, hoszttól függetlenül; a store/egress-vendor-hosts.json listája rájuk nem hat, mert a deny minden engedélyt felülír. Bekapcsolva ez a négy deny-sor lekerül azokról az ágensekről, amelyeken a bash-egress-parser hook fut (a fő ágensen ehhez a dashboard a projekt .claude/settings.local.json fájljába --main-scope bejegyzést tesz, kikapcsoláskor kiveszi; a követett .claude/settings.json egyik állásban sem változik), és a hook dönt: localhost, helyi hálózat és a vendor-listán szereplő hoszt átmegy, minden más tiltva marad. A rövidített kapcsolót a hook úgy oldja fel, ahogy a curl és a wget; tiltva marad az ismeretlen vagy kétértelmű kapcsoló, a wget -e (néhány ártalmatlan beállítás kivételével), a konfigfájlból olvasott cél (curl -K, wget -i/--config), a proxy- vagy rc-változó (https_proxy, WGETRC, CURL_HOME, HOME) megadása a parancsban, és a futásidőben kiszámított cél (változóból, fájlból vagy $(...)-ből jövő hoszt, pl. a vaultból kiolvasott URL): a hosztnak szó szerint a parancsban kell állnia. MARADÉK KOCKÁZAT: egy korábbi hívással megírt ~/.wgetrc vagy ~/.curlrc proxyt vagy további URL-t adhat minden curl/wget futásnak, ezt a hook nem látja; és az átirányítás (a wget alapból, a curl -L-lel követi) a vendor-hosztról más hosztra is vihet. A gazda saját Claude-sessionje egyik állásban sem korlátozott. Az nc/ncat/telnet tiltás mindkét állásban marad. A módosítás a dashboard újraindításakor és az ágensek következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'BASH_SANDBOX_AGENTS',
+    type: 'string',
+    default: '',
+    // Taking an agent OFF the list loosens it; adding one does not.
+    loosens: (oldValue, newValue) => {
+      const ids = (v: string) => new Set(v.split(/[\s,]+/).map((w) => w.trim().toLowerCase()).filter(Boolean))
+      const next = ids(newValue)
+      return [...ids(oldValue)].some((id) => !next.has(id))
+    },
+    description: 'Bash-sandbox ágensenként (Claude Code beépített sandboxa, macOS). Az itt felsorolt ágensek (azonosító, vesszővel vagy szóközzel elválasztva, pl. "soma") minden Bash-parancsa és annak minden gyerekfolyamata, a fájlba írt és úgy futtatott szkript is (python3 crawl.py), csak a store/egress-vendor-hosts.json listáján szereplő hosztot éri el (a "domains" bejegyzés aldomainjeivel együtt), a localhostot és a helyi hálózatot. Minden más hoszt kérdés nélkül tiltva, nyers sockettel is. Írni a saját mappájába, a ~/worktrees/<azonosító> alá, a temp-mappába és a store/bash-sandbox-write-paths.json-ban neki megadott helyekre tud. A beállítást a dashboard minden indításkor a store/bash-sandbox/<azonosító>.settings.json fájlba írja, és --settings kapcsolóval adja át; ha nem tudja megírni, vagy az ágens távoli gépen fut, az ágens NEM indul el. Üresen (alapértelmezés) senki nincs sandboxban. A fő ágensre nem hat. Ágenst felvenni bármely hívó tud, LEVENNI csak bejelentkezett gazda-session vagy teljes jogú eszközkulcs (a közös tokennel nem, mert azt minden ágens is birtokolja), illetve a store/config-overrides.json kézi szerkesztése. NEM fedi: a hookok és az MCP-szerverek hálózatát (azok a sandboxon kívül futnak), a Write/Edit eszközt, és a headless Chrome-ot (a sandboxban nem indul el). A módosítás az ágens következő indításakor lép életbe.',
     module: 'system',
     secret: false,
     requiresRestart: true,
