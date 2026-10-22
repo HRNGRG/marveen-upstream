@@ -95,6 +95,7 @@ import {
   type PermissionPromptSummary,
 } from '../pane-state.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { frozenSkip } from './fleet-freeze.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -1027,5 +1028,5 @@ export function startStuckToolCallWatcher(): NodeJS.Timeout {
     }
   }
   setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
-  return setInterval(() => { void sweep() }, INTERVAL_MS)
+  return setInterval(() => { if (frozenSkip('stuck-tool-call')) return; void sweep() }, INTERVAL_MS)
 }

@@ -82,6 +82,7 @@ import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detecto
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
+import { frozenSkip } from './fleet-freeze.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -3162,7 +3163,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     }
   }
   setTimeout(() => { void check() }, 30000)
-  return setInterval(() => { void check() }, 60000)
+  // KILLSWITCH1022: this tick also revives desired-but-missing agents
+  // (reconcileDesiredAgents), which a stopped fleet must not do.
+  return setInterval(() => { if (frozenSkip('channel-monitor')) return; void check() }, 60000)
 }
 
 // Start desired-but-missing agents one at a time. The stagger is mandatory:

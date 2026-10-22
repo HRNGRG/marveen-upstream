@@ -45,6 +45,7 @@ import { isStopMessage, isUrgentDelivery, selectTickWindow } from './message-rou
 import { deliveryHoldFor, type DeliveryHold } from './delivery-hold.js'
 
 import { MESSAGE_ABANDON_WINDOW_MS } from './message-abandon.js'
+import { frozenSkip } from './fleet-freeze.js'
 // How long a message must have waited before the stale-parked-input janitor is
 // allowed to clear the receiver's input box. Long enough that a brief, genuine
 // "agent parked a draft it is about to submit" never gets clobbered; short
@@ -693,6 +694,8 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
 
 export function startMessageRouter(): NodeJS.Timeout {
   return setInterval(async () => {
+    // KILLSWITCH1022: a frozen fleet gets nothing delivered; the rows wait.
+    if (frozenSkip('message-router')) return
     // Re-entrancy guard: STT can hold a tick for up to 65s; skip new ticks
     // while the previous one is still in flight to prevent double-delivery.
     if (_tickRunning) return

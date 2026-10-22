@@ -58,6 +58,7 @@ import {
   type HandoffStaleness,
   type GuardInputs,
 } from '../context-guard.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 // Fleet context guard (kanban #81): acts BEFORE a session drowns in its own
 // context. Sweep every agent (main included) every five minutes; at actPct ask the
@@ -1275,5 +1276,5 @@ export function startContextGuardRunner(): NodeJS.Timeout {
     }
   }
   setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, INTERVAL_MS)
+  return setInterval(whileNotFrozen('context-guard', sweep), INTERVAL_MS)
 }
