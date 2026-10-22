@@ -320,6 +320,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
+    // The usernames are the first half of a password guess, so once a login
+    // exists the list takes the owner's session too (DEVKEYFOLLOW1022).
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     json(res, { users: listDashboardUsers() })
     return true
   }

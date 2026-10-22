@@ -283,7 +283,8 @@ describe('users CRUD', () => {
 
   it('lists users without password hashes', async () => {
     await seedUser('alice')
-    const { json } = await call('GET', '/api/auth/users', { auth: TOKEN_AUTH })
+    // DEVKEYFOLLOW1022: once a login exists the list takes the owner's session.
+    const { json } = await call('GET', '/api/auth/users', { auth: { kind: 'session', user: 'alice' } })
     const users = json().users as Record<string, unknown>[]
     expect(users.length).toBe(1)
     expect(users[0]).not.toHaveProperty('password_hash')
