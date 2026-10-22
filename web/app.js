@@ -15083,10 +15083,12 @@ async function renderAuthCard() {
   if (!status) { body.innerHTML = `<p class="auth-muted">${t('auth.card.unavailable')}</p>`; return }
   if (status.setup_required) { renderCreateLoginForm(body) }
   else if (status.method === 'session') { renderSessionPanel(body, status) }
-  else renderTokenModePanel(body)
+  else renderTokenModePanel(body, status)
   // Device keys are managed by token/session operators only (a device key
   // itself gets 403 from the management endpoints, so don't render the panel).
-  if (status.method === 'token' || status.method === 'session') {
+  // Once a login exists, issuing keys and pairing take the owner's session
+  // (DEVKEYMINT1022), so a token-mode browser gets the sign-in button above instead.
+  if (status.method === 'session' || (status.method === 'token' && status.setup_required)) {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
     renderOperatorAccessSection(body)
@@ -15485,9 +15487,28 @@ async function renderAuthSessions() {
   } catch { el.innerHTML = '' }
 }
 
-function renderTokenModePanel(body) {
+function renderTokenModePanel(body, status) {
   body.innerHTML =
     `<p class="auth-muted">${t('auth.card.token_mode')}</p>`
+  if (!status || !status.login_available) return
+  // The browser sends a stored access token ahead of the session cookie, so a
+  // browser that came in with ?token= (or the mobile QR) never reaches the login.
+  // Dropping the stored token and reloading lands on the sign-in overlay; from
+  // then on this browser runs on the owner's session (DEVKEYMINT1022).
+  const p = document.createElement('p')
+  p.className = 'auth-muted'
+  p.textContent = t('auth.card.token_mode_signin_desc')
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'btn-primary'
+  btn.id = 'authTokenSignIn'
+  btn.textContent = t('auth.card.token_mode_signin_btn')
+  btn.addEventListener('click', () => {
+    try { localStorage.removeItem('marveen-dashboard-token') } catch { /* storage blocked */ }
+    window.location.reload()
+  })
+  body.appendChild(p)
+  body.appendChild(btn)
 }
 
 // Dismissible setup banner: shown only when the operator is authed via the token
