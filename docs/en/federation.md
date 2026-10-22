@@ -104,7 +104,7 @@ If only one side sets permissive trust, cooperation becomes **asymmetric**: one 
 | POST | `/api/federation/inbox` | any peer inbound token OR dashboard | inbound message (the token identifies the caller) |
 | GET | `/api/federation/peers` | dashboard only | config view (NO tokens, presence flags) |
 | PUT | `/api/federation/peers` | dashboard; owner session once a login exists | full-document write (scriptable primitive) |
-| POST | `/api/federation/peers` | dashboard; owner session once a login exists | add peer — the inbound token is minted server-side, returned once |
+| POST | `/api/federation/peers` | dashboard; owner session once a login exists | add peer: the inbound token is minted server-side, returned once |
 | PATCH / DELETE | `/api/federation/peers/:id` | PATCH: dashboard; owner session once a login exists. DELETE: dashboard | edit / remove peer (removal closes its pending messages, purges dedup+backoff+poller cache) |
 | GET | `/api/federation/peers/:id/inbound-token` | dashboard; owner session once a login exists | token reveal (logged) |
 | POST | `/api/federation/peers/:id/rotate-inbound-token` | dashboard; owner session once a login exists | token rotation (logged) |

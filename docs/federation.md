@@ -104,7 +104,7 @@ Ha csak az egyik oldal állít be megengedő bizalmat, az együttműködés **as
 | POST | `/api/federation/inbox` | bármely társ bejövő tokenje VAGY dashboard | bejövő üzenet (a token azonosítja a hívót) |
 | GET | `/api/federation/peers` | csak dashboard | konfiguráció-nézet (tokenek NÉLKÜL, jelenlét-flagek) |
 | PUT | `/api/federation/peers` | dashboard; ha már van login, gazda-session | teljes konfig írása (szkriptelhető primitíva) |
-| POST | `/api/federation/peers` | dashboard; ha már van login, gazda-session | társ felvétele — a bejövő tokent a szerver generálja és egyszer visszaadja |
+| POST | `/api/federation/peers` | dashboard; ha már van login, gazda-session | társ felvétele: a bejövő tokent a szerver generálja és egyszer visszaadja |
 | PATCH / DELETE | `/api/federation/peers/:id` | PATCH: dashboard; ha már van login, gazda-session. DELETE: dashboard | társ szerkesztése / törlése (törléskor: függő üzenetei lezárva, dedup+backoff+poller-cache purgálva) |
 | GET | `/api/federation/peers/:id/inbound-token` | dashboard; ha már van login, gazda-session | token-felfedés (naplózott) |
 | POST | `/api/federation/peers/:id/rotate-inbound-token` | dashboard; ha már van login, gazda-session | token-csere (naplózott) |
