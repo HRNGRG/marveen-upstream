@@ -15547,7 +15547,74 @@ document.addEventListener('DOMContentLoaded', () => {
   wireAuthBanner()
   initAuthBanner()
   wireBranchDriftBanner()
+  wireFleetFreeze()
 })
+
+// --- Fleet freeze, the red button (KILLSWITCH1022) ---------------------------
+// Pulling it is open to every signed-in browser; lifting it needs the owner's
+// dashboard login (the server answers 403 owner_session_required otherwise).
+const FLEET_FREEZE_POLL_MS = 15000
+
+function renderFleetFreeze(data) {
+  const banner = document.getElementById('fleetFreezeBanner')
+  const text = document.getElementById('fleetFreezeBannerText')
+  const btn = document.getElementById('fleetFreezeBtn')
+  if (!banner || !text || !btn) return
+  const st = data && data.frozen ? data.state : null
+  if (!st) {
+    banner.hidden = true
+    btn.disabled = false
+    return
+  }
+  const when = st.at ? new Date(st.at).toLocaleString() : ''
+  text.textContent = t(st.mode === 'stop' ? 'fleet_freeze.banner.stop' : 'fleet_freeze.banner.freeze',
+    { by: st.by || '?', at: when, reason: st.reason || '' })
+  banner.hidden = false
+  btn.disabled = st.mode === 'stop'
+}
+
+async function pollFleetFreeze() {
+  try {
+    const res = await fetch('/api/fleet/freeze')
+    if (!res.ok) return
+    renderFleetFreeze(await res.json())
+  } catch { /* the next poll retries */ }
+}
+
+function wireFleetFreeze() {
+  const btn = document.getElementById('fleetFreezeBtn')
+  const unfreezeBtn = document.getElementById('fleetUnfreezeBtn')
+  if (!btn || !unfreezeBtn) return
+  btn.addEventListener('click', async () => {
+    const reason = (window.prompt(t('fleet_freeze.prompt.reason')) || '').trim()
+    if (!reason) return
+    const mode = window.confirm(t('fleet_freeze.prompt.stop')) ? 'stop' : 'freeze'
+    try {
+      const res = await fetch('/api/fleet/freeze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason, mode }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
+      renderFleetFreeze(data)
+      showToast(t('fleet_freeze.toast.frozen'))
+    } catch (err) { showToast(String(err.message || err)) }
+  })
+  unfreezeBtn.addEventListener('click', async () => {
+    if (!window.confirm(t('fleet_freeze.prompt.unfreeze'))) return
+    try {
+      const res = await fetch('/api/fleet/unfreeze', { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (res.status === 403) { showToast(t('fleet_freeze.toast.owner_only'), 8000); return }
+      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
+      renderFleetFreeze({ frozen: false })
+      showToast(t('fleet_freeze.toast.unfrozen'))
+    } catch (err) { showToast(String(err.message || err)) }
+  })
+  pollFleetFreeze()
+  setInterval(pollFleetFreeze, FLEET_FREEZE_POLL_MS)
+}
 
 async function loadSettings() {
   const tabNav = document.getElementById('settingsTabNav')

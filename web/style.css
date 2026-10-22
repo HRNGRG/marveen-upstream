@@ -8136,3 +8136,24 @@ body {
   .notes-actions { text-align: left; }
   .notes-assignee { white-space: normal; overflow-wrap: anywhere; }
 }
+
+/* KILLSWITCH1022: the fleet's red button and its banner. */
+.fleet-freeze-btn {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.fleet-freeze-btn:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.fleet-freeze-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.fleet-freeze-banner {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+  font-weight: 600;
+}

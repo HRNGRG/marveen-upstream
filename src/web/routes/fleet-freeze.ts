@@ -43,6 +43,41 @@ function runningSubAgents(): string[] {
   return listAgentNames().filter((n) => n !== MAIN_AGENT_ID && isAgentRunning(n))
 }
 
+/**
+ * Pulls the brake: writes the state (the switch), stops the running sub-agents in
+ * 'stop' mode, logs it and tells the owner. A second pull keeps the first reason
+ * and can only go up ('freeze' -> 'stop'), never down; lifting is
+ * POST /api/fleet/unfreeze. Shared by the route and the owner's /stop command.
+ */
+export async function pullFleetBrake(mode: FleetFreezeMode, reason: string, by: string): Promise<FleetFreezeState> {
+  const prev = readFleetFreeze()
+  const state: FleetFreezeState = prev
+    ? { ...prev, mode: prev.mode === 'stop' || mode === 'stop' ? 'stop' : 'freeze' }
+    : { mode, reason, by, at: new Date().toISOString() }
+  // The file first: from here on every tool call is refused and every loop
+  // skips, so the stop below cannot race an agent that is being revived.
+  writeFleetFreeze(state)
+  if (state.mode === 'stop' && prev?.mode !== 'stop') {
+    const stopped: string[] = []
+    for (const name of runningSubAgents()) {
+      const r = await stopAgentProcess(name)
+      if (r.ok) stopped.push(name)
+      else logger.warn({ agent: name, error: r.error }, 'fleet stop: agent did not stop')
+    }
+    state.stoppedAgents = [...(prev?.stoppedAgents ?? []), ...stopped]
+    writeFleetFreeze(state)
+  }
+  logConfigChange('fleet.freeze', prev ? JSON.stringify(prev) : null, JSON.stringify(state), by)
+  logger.warn({ mode: state.mode, by, reason }, 'FLEET FROZEN')
+  if (!prev || prev.mode !== state.mode) {
+    void notifyOwner(
+      `🛑 A flotta ${state.mode === 'stop' ? 'LEÁLLÍTVA' : 'FAGYASZTVA'} (${by}): ${reason}\n` +
+      'Az ügynökök nem futtathatnak eszközt, a háttér-ciklusok állnak. Feloldás: dashboard, bejelentkezve.',
+    ).catch(() => {})
+  }
+  return state
+}
+
 export async function tryHandleFleetFreeze(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
   if (path !== '/api/fleet/freeze' && path !== '/api/fleet/unfreeze') return false
@@ -75,33 +110,7 @@ export async function tryHandleFleetFreeze(ctx: RouteContext): Promise<boolean> 
       return true
     }
     const mode: FleetFreezeMode = body.mode === 'stop' ? 'stop' : 'freeze'
-    const prev = readFleetFreeze()
-    // Already frozen: a second pull keeps the first reason and can only go up
-    // ('freeze' -> 'stop'), never down; lifting is the unfreeze call's job.
-    const state: FleetFreezeState = prev
-      ? { ...prev, mode: prev.mode === 'stop' || mode === 'stop' ? 'stop' : 'freeze' }
-      : { mode, reason, by: actorOf(auth), at: new Date().toISOString() }
-    // The file first: from here on every tool call is refused and every loop
-    // skips, so the stop below cannot race an agent that is being revived.
-    writeFleetFreeze(state)
-    if (state.mode === 'stop' && prev?.mode !== 'stop') {
-      const stopped: string[] = []
-      for (const name of runningSubAgents()) {
-        const r = await stopAgentProcess(name)
-        if (r.ok) stopped.push(name)
-        else logger.warn({ agent: name, error: r.error }, 'fleet stop: agent did not stop')
-      }
-      state.stoppedAgents = [...(prev?.stoppedAgents ?? []), ...stopped]
-      writeFleetFreeze(state)
-    }
-    logConfigChange('fleet.freeze', prev ? JSON.stringify(prev) : null, JSON.stringify(state), actorOf(auth))
-    logger.warn({ mode: state.mode, by: actorOf(auth), reason }, 'FLEET FROZEN')
-    if (!prev || prev.mode !== state.mode) {
-      void notifyOwner(
-        `🛑 A flotta ${state.mode === 'stop' ? 'LEÁLLÍTVA' : 'FAGYASZTVA'} (${actorOf(auth)}): ${reason}\n` +
-        'Az ügynökök nem futtathatnak eszközt, a háttér-ciklusok állnak. Feloldás: dashboard, bejelentkezve.',
-      ).catch(() => {})
-    }
+    const state = await pullFleetBrake(mode, reason, actorOf(auth))
     json(res, { ok: true, frozen: true, state })
     return true
   }

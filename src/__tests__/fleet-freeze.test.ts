@@ -146,6 +146,34 @@ describe('lifting it: the owner only, the #2163 predicate', () => {
   })
 })
 
+describe("the owner's phone: /stop and /resume", () => {
+  async function cmd(text: string): Promise<string[]> {
+    const { registerBuiltinCommands } = await import('../web/builtin-commands.js')
+    const { dispatchCommand } = await import('../web/commands.js')
+    registerBuiltinCommands()
+    const replies: string[] = []
+    await dispatchCommand(text, { reply: async (t: string) => { replies.push(t) }, ownerId: 1, now: Date.now() })
+    return replies
+  }
+
+  it('/stop <reason> freezes the fleet as the owner command; a bare /stop only asks for the reason', async () => {
+    const bare = await cmd('/stop')
+    expect(isFleetFrozen()).toBe(false)
+    expect(bare.join(' ')).toMatch(/indok/)
+    const r = await cmd('/stop furcsa levelek mennek ki')
+    expect(isFleetFrozen()).toBe(true)
+    expect(readFleetFreeze()).toMatchObject({ mode: 'freeze', reason: 'furcsa levelek mennek ki', by: 'owner-command' })
+    expect(r.join(' ')).toMatch(/FAGYASZTVA/)
+  })
+
+  it('/resume never lifts it: it points to the dashboard login', async () => {
+    await freeze(TOKEN)
+    const r = await cmd('/resume')
+    expect(isFleetFrozen()).toBe(true)
+    expect(r.join(' ')).toMatch(/dashboard/)
+  })
+})
+
 describe('the loops', () => {
   it('a wrapped tick does nothing while frozen and runs again after', async () => {
     const tick = vi.fn(() => 'ran')
