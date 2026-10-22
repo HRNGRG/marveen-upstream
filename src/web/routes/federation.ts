@@ -293,7 +293,8 @@ function refuseIfConfigUnhealthy(res: RouteContext['res']): boolean {
 
 // DEVKEYFOLLOW1022: a peer's inbound token admits a REMOTE system into our inbox,
 // so adding a peer, writing the full document (it carries the inbound tokens),
-// rotating and revealing a token are credential issuance, the same as a device
+// rotating and revealing a token, and editing a peer (it re-points its outbound
+// token) are credential issuance, the same as a device
 // key (routes/auth.ts, DEVKEYMINT1022): once a dashboard login exists they take
 // the owner's session. On the machine itself store/federation.json stays editable.
 const FED_OWNER_SESSION_REQUIRED = {
@@ -645,6 +646,11 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (refuseIfConfigUnhealthy(res)) return true
 
     if (method === 'PATCH') {
+      // A new baseUrl sends this peer's outbound token (poller manifest call,
+      // bridge inbox) and our outbound messages to that host, and
+      // shareCapabilitySummaries ships our summaries: re-pointing an existing
+      // credential is issuance too (Samu, #2175 review). DELETE stays open.
+      if (refuseUnlessOwner(ctx)) return true
       const payload = await readJsonBody(ctx)
       if (isErr(payload)) return true
       if (payload === null || typeof payload !== 'object') { json(res, { error: 'Body must be a JSON object' }, 400); return true }

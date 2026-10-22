@@ -1,6 +1,7 @@
 // DEVKEYFOLLOW1022: the rest of the credential-issuing routes follow DEVKEYMINT1022.
 // Once a dashboard login exists, issuing a federation peer's inbound token (add,
-// full-document PUT, rotate) and revealing it, widening the operator switches and
+// full-document PUT, rotate), revealing it, editing a peer (it re-points the
+// peer's outbound token), widening the operator switches and
 // listing the usernames take the owner's session; the bearer token keeps them
 // only for the first-run setup (no user yet).
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
@@ -60,6 +61,7 @@ const putDoc = (auth: RouteContext['auth']) => call(tryHandleFederation, 'PUT', 
 })
 const rotate = (auth: RouteContext['auth']) => call(tryHandleFederation, 'POST', '/api/federation/peers/teodor/rotate-inbound-token', auth)
 const reveal = (auth: RouteContext['auth']) => call(tryHandleFederation, 'GET', '/api/federation/peers/teodor/inbound-token', auth)
+const patchPeer = (auth: RouteContext['auth'], body: Record<string, unknown>) => call(tryHandleFederation, 'PATCH', '/api/federation/peers/teodor', auth, body)
 const putOperator = (auth: RouteContext['auth']) => call(tryHandleOperatorAccess, 'PUT', '/api/operator-access', auth, { enabled: true, agentControl: true })
 const listUsers = (auth: RouteContext['auth'], headers: Record<string, string> = {}) => call(tryHandleAuth, 'GET', '/api/auth/users', auth, undefined, headers)
 
@@ -151,13 +153,25 @@ describe('once a login exists, the token cannot issue a peer token or widen the 
     expect(r.json()).not.toHaveProperty('users')
   })
 
-  it('managing an existing peer without issuing stays open: PATCH, DELETE, the list', async () => {
+  it('editing a peer cannot re-point its credential to another host (Samu, #2175 review)', async () => {
+    const r = await patchPeer(TOKEN_AUTH, { baseUrl: 'https://attacker.example', shareCapabilitySummaries: true })
+    expect(r.status).toBe(403)
+    expect(r.json().code).toBe('owner_session_required')
+    const peer = getFederationConfig().peers[0]!
+    expect(peer.baseUrl).toBe('https://teodor.example')
+    expect(peer.shareCapabilitySummaries).toBeUndefined()
+    expect((await patchPeer(DEVICE_AUTH, { baseUrl: 'https://attacker.example' })).status).toBe(403)
+  })
+
+  it('reading the peers and removing one stay open: they grant nothing', async () => {
     expect((await call(tryHandleFederation, 'GET', '/api/federation/peers', TOKEN_AUTH)).status).toBe(200)
-    expect((await call(tryHandleFederation, 'PATCH', '/api/federation/peers/teodor', TOKEN_AUTH, { abandonWindowMinutes: 60 })).status).toBe(200)
     expect((await call(tryHandleFederation, 'DELETE', '/api/federation/peers/teodor', TOKEN_AUTH)).status).toBe(200)
   })
 
   it('the owner session issues and manages (positive control)', async () => {
+    const patched = await patchPeer(SESSION_AUTH, { baseUrl: 'https://teodor2.example' })
+    expect(patched.status).toBe(200)
+    expect(getFederationConfig().peers[0]!.baseUrl).toBe('https://teodor2.example')
     expect((await rotate(SESSION_AUTH)).status).toBe(200)
     expect((await reveal(SESSION_AUTH)).status).toBe(200)
     expect((await addPeer(SESSION_AUTH, 'zeta')).status).toBe(201)

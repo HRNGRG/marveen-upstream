@@ -105,7 +105,7 @@ If only one side sets permissive trust, cooperation becomes **asymmetric**: one 
 | GET | `/api/federation/peers` | dashboard only | config view (NO tokens, presence flags) |
 | PUT | `/api/federation/peers` | dashboard; owner session once a login exists | full-document write (scriptable primitive) |
 | POST | `/api/federation/peers` | dashboard; owner session once a login exists | add peer — the inbound token is minted server-side, returned once |
-| PATCH / DELETE | `/api/federation/peers/:id` | dashboard only | edit / remove peer (removal closes its pending messages, purges dedup+backoff+poller cache) |
+| PATCH / DELETE | `/api/federation/peers/:id` | PATCH: dashboard; owner session once a login exists. DELETE: dashboard | edit / remove peer (removal closes its pending messages, purges dedup+backoff+poller cache) |
 | GET | `/api/federation/peers/:id/inbound-token` | dashboard; owner session once a login exists | token reveal (logged) |
 | POST | `/api/federation/peers/:id/rotate-inbound-token` | dashboard; owner session once a login exists | token rotation (logged) |
 | POST | `/api/federation/enabled` | dashboard only | master switch (lossless) |
@@ -114,7 +114,7 @@ If only one side sets permissive trust, cooperation becomes **asymmetric**: one 
 | POST | `/api/federation/apply` | dashboard only | apply settings to the agent (targeted main-agent restart) |
 | POST | `/api/federation/remove` | dashboard only | full removal |
 
-A peer's inbound token admits a remote system, so issuing one (add peer, full-document PUT, rotation) and revealing one take the owner's session once a dashboard login exists; the access token keeps them for the first-run setup only (403 `owner_session_required`). On the machine itself `store/federation.json` stays editable.
+A peer's inbound token admits a remote system, so issuing one (add peer, full-document PUT, rotation), revealing one and editing a peer (a new baseUrl would carry our outbound token there) take the owner's session once a dashboard login exists; the access token keeps them for the first-run setup only (403 `owner_session_required`). On the machine itself `store/federation.json` stays editable.
 
 Peer tokens are scoped to the manifest+inbox pair only — every other API answers 401. The dashboard token never crosses to a peer.
 

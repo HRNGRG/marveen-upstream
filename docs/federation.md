@@ -105,7 +105,7 @@ Ha csak az egyik oldal állít be megengedő bizalmat, az együttműködés **as
 | GET | `/api/federation/peers` | csak dashboard | konfiguráció-nézet (tokenek NÉLKÜL, jelenlét-flagek) |
 | PUT | `/api/federation/peers` | dashboard; ha már van login, gazda-session | teljes konfig írása (szkriptelhető primitíva) |
 | POST | `/api/federation/peers` | dashboard; ha már van login, gazda-session | társ felvétele — a bejövő tokent a szerver generálja és egyszer visszaadja |
-| PATCH / DELETE | `/api/federation/peers/:id` | csak dashboard | társ szerkesztése / törlése (törléskor: függő üzenetei lezárva, dedup+backoff+poller-cache purgálva) |
+| PATCH / DELETE | `/api/federation/peers/:id` | PATCH: dashboard; ha már van login, gazda-session. DELETE: dashboard | társ szerkesztése / törlése (törléskor: függő üzenetei lezárva, dedup+backoff+poller-cache purgálva) |
 | GET | `/api/federation/peers/:id/inbound-token` | dashboard; ha már van login, gazda-session | token-felfedés (naplózott) |
 | POST | `/api/federation/peers/:id/rotate-inbound-token` | dashboard; ha már van login, gazda-session | token-csere (naplózott) |
 | POST | `/api/federation/enabled` | csak dashboard | fő kapcsoló (veszteségmentes) |
@@ -114,7 +114,7 @@ Ha csak az egyik oldal állít be megengedő bizalmat, az együttműködés **as
 | POST | `/api/federation/apply` | csak dashboard | beállítások életbe léptetése (fő-ügynök célzott újraindítása) |
 | POST | `/api/federation/remove` | csak dashboard | teljes eltávolítás |
 
-A társ bejövő tokenje egy távoli rendszert enged be, ezért a kiadása (társ felvétele, teljes konfig PUT, csere) és a felfedése a gazda sessionjét kéri, amint van dashboard-login; a hozzáférési token csak az első telepítéskor (még nincs login) teheti meg (403 `owner_session_required`). A gépen magán a `store/federation.json` továbbra is szerkeszthető.
+A társ bejövő tokenje egy távoli rendszert enged be, ezért a kiadása (társ felvétele, teljes konfig PUT, csere), a felfedése és a társ szerkesztése (az új baseUrl-re a kimenő tokenünk menne) a gazda sessionjét kéri, amint van dashboard-login; a hozzáférési token csak az első telepítéskor (még nincs login) teheti meg (403 `owner_session_required`). A gépen magán a `store/federation.json` továbbra is szerkeszthető.
 
 A társ-tokenek hatóköre kizárólag a manifest+inbox pár — minden más API-ra 401-et kapnak. A dashboard-token soha nem kerül át a társhoz.
 
