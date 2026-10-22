@@ -6749,6 +6749,23 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted);
   margin-top: 6px;
 }
+
+/* "Log in to add a plan" (SETUPTOKENWIZ1022): link, code field, submit. */
+.claude-plans-login-step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+/* display:flex would override the hidden attribute without this. */
+.claude-plans-login-step[hidden] {
+  display: none;
+}
+.claude-plans-login-step .form-row {
+  width: 100%;
+  align-items: center;
+}
 .claude-plans-form-actions {
   display: flex;
   gap: 8px;

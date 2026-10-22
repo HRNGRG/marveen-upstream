@@ -15905,6 +15905,7 @@ async function renderClaudePlansPanel(body) {
         <div class="form-group" style="flex:1">
           <label>${t('settings.claude_plans.form.mode')}</label>
           <select class="input" id="cpFormMode">
+            <option value="login">${t('settings.claude_plans.form.mode_login')}</option>
             <option value="token">${t('settings.claude_plans.form.mode_token')}</option>
             <option value="configDir">${t('settings.claude_plans.form.mode_config_dir')}</option>
           </select>
@@ -15921,6 +15922,18 @@ async function renderClaudePlansPanel(body) {
         <label for="cpFormToken">${t('settings.claude_plans.form.token')}</label>
         <input class="input" id="cpFormToken" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…">
         <div class="claude-plans-form-hint" id="cpFormTokenHint">${t('settings.claude_plans.form.token_hint')}</div>
+      </div>
+      <div class="form-group" id="cpFormLoginGroup" hidden>
+        <div class="claude-plans-form-hint">${t('settings.claude_plans.login.hint')}</div>
+        <div id="cpLoginStep" class="claude-plans-login-step" hidden>
+          <a class="btn-secondary btn-compact" id="cpLoginLink" href="#" target="_blank" rel="noopener noreferrer">${t('settings.claude_plans.login.open_link')}</a>
+          <label for="cpLoginCode">${t('settings.claude_plans.login.code')}</label>
+          <div class="form-row">
+            <input class="input" id="cpLoginCode" style="flex:1" autocomplete="off" spellcheck="false">
+            <button class="btn-secondary btn-compact" id="cpLoginCodeBtn">${t('settings.claude_plans.login.submit_code')}</button>
+          </div>
+        </div>
+        <div id="cpLoginStatus" class="claude-plans-form-hint" role="status" hidden></div>
       </div>
       <div class="form-group" id="cpFormConfigDirGroup" hidden>
         <label for="cpFormConfigDir">${t('settings.claude_plans.form.config_dir')}</label>
@@ -15939,15 +15952,25 @@ async function renderClaudePlansPanel(body) {
   `
 
   document.getElementById('cpFormMode').addEventListener('change', () => syncClaudePlanFormMode())
-  document.getElementById('cpFormAddBtn').addEventListener('click', () => saveClaudePlan())
-  document.getElementById('cpFormCancelBtn').addEventListener('click', () => resetClaudePlanForm())
+  document.getElementById('cpFormAddBtn').addEventListener('click', () => {
+    if (document.getElementById('cpFormMode').value === 'login' && !claudePlanFormEditing) startClaudePlanLogin()
+    else saveClaudePlan()
+  })
+  document.getElementById('cpFormCancelBtn').addEventListener('click', () => {
+    if (claudePlanLoginActive) cancelClaudePlanLogin()
+    else resetClaudePlanForm()
+  })
+  document.getElementById('cpLoginCodeBtn').addEventListener('click', () => submitClaudePlanLoginCode())
+  document.getElementById('cpLoginCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitClaudePlanLoginCode() })
   for (const id of ['cpFormId', 'cpFormLabel', 'cpFormConfigDir', 'cpFormToken']) {
     document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') saveClaudePlan() })
   }
   claudePlanFormEditing = null
+  claudePlanLoginActive = false
   syncClaudePlanFormMode()
 
   await loadClaudePlansList()
+  await resumeClaudePlanLogin()
 }
 
 // The plan being edited in the form (the GET /api/claude-plans object), or
@@ -15991,9 +16014,19 @@ function syncClaudePlanFormMode() {
   const mode = document.getElementById('cpFormMode')?.value
   const tokenGroup = document.getElementById('cpFormTokenGroup')
   const dirGroup = document.getElementById('cpFormConfigDirGroup')
-  if (!tokenGroup || !dirGroup) return
+  const loginGroup = document.getElementById('cpFormLoginGroup')
+  if (!tokenGroup || !dirGroup || !loginGroup) return
   tokenGroup.hidden = mode !== 'token'
-  dirGroup.hidden = mode === 'token'
+  dirGroup.hidden = mode !== 'configDir'
+  loginGroup.hidden = mode !== 'login'
+  // Logging in creates a NEW plan; an edit keeps the paste and config-dir ways.
+  const loginOption = document.querySelector('#cpFormMode option[value="login"]')
+  if (loginOption) loginOption.hidden = !!claudePlanFormEditing
+  const addBtn = document.getElementById('cpFormAddBtn')
+  if (addBtn && !claudePlanFormEditing) {
+    addBtn.textContent = t(mode === 'login' ? 'settings.claude_plans.login.start_btn' : 'settings.claude_plans.form.add_btn')
+    addBtn.hidden = mode === 'login' && claudePlanLoginActive
+  }
   const hasStoredToken = !!claudePlanFormEditing?.tokenSecretId
   const hint = document.getElementById('cpFormTokenHint')
   if (hint) {
@@ -16015,13 +16048,14 @@ function resetClaudePlanForm() {
   document.getElementById('cpFormLabel').value = ''
   document.getElementById('cpFormConfigDir').value = ''
   document.getElementById('cpFormToken').value = ''
-  document.getElementById('cpFormMode').value = 'token'
+  document.getElementById('cpFormMode').value = 'login'
   document.getElementById('cpFormType').value = 'personal'
   document.getElementById('cpFormChannelsAllowed').checked = true
   document.getElementById('cpFormTitle').textContent = t('settings.claude_plans.form.title_add')
   document.getElementById('cpFormAddBtn').textContent = t('settings.claude_plans.form.add_btn')
   document.getElementById('cpFormCancelBtn').hidden = true
   document.getElementById('cpFormError').hidden = true
+  showClaudePlanLoginStep(null)
   syncClaudePlanFormMode()
 }
 
@@ -16096,6 +16130,164 @@ async function saveClaudePlan() {
     errEl.textContent = t('settings.claude_plans.form.error_generic')
     errEl.hidden = false
   }
+}
+
+// "Log in to add a plan" (SETUPTOKENWIZ1022): the server runs claude
+// setup-token, this form shows its login link, takes the code the login page
+// gives, and the server stores the token it catches. The token never reaches
+// the browser. The paste and config-dir modes stay as they were.
+let claudePlanLoginActive = false
+
+// Pure: the start body from the form fields, or an i18n error key.
+function buildClaudePlanLoginStartBody(fields) {
+  const id = String(fields.id || '').trim()
+  const label = String(fields.label || '').trim()
+  if (!id || !label) return { error: 'settings.claude_plans.form.error_required' }
+  return { body: { id, label, planType: fields.planType, channelsAllowed: !!fields.channelsAllowed } }
+}
+
+// Server error code -> i18n key; unknown codes fall back to the server text.
+const CLAUDE_PLAN_LOGIN_ERROR_KEYS = {
+  'busy': 'settings.claude_plans.login.error_busy',
+  'id-taken': 'settings.claude_plans.login.error_id_taken',
+  'invalid-plan': 'settings.claude_plans.login.error_invalid',
+  'claude-not-found': 'settings.claude_plans.login.error_claude_missing',
+  'url-timeout': 'settings.claude_plans.login.error_no_link',
+  'code-timeout': 'settings.claude_plans.login.error_expired',
+  'token-timeout': 'settings.claude_plans.login.error_no_token',
+  'exited': 'settings.claude_plans.login.error_no_token',
+  'bad-code': 'settings.claude_plans.login.error_bad_code',
+  'wrong-phase': 'settings.claude_plans.login.error_expired',
+  'verify-failed': 'settings.claude_plans.login.error_rejected',
+}
+
+function claudePlanLoginErrorText(data) {
+  const key = data && CLAUDE_PLAN_LOGIN_ERROR_KEYS[data.code]
+  if (key) return t(key)
+  return (data && data.error) || t('settings.claude_plans.form.error_generic')
+}
+
+// url: show the link + code step; null: back to the start button.
+function showClaudePlanLoginStep(url) {
+  const step = document.getElementById('cpLoginStep')
+  const link = document.getElementById('cpLoginLink')
+  const code = document.getElementById('cpLoginCode')
+  if (!step || !link || !code) return
+  claudePlanLoginActive = !!url
+  step.hidden = !url
+  link.href = url && url.startsWith('https://') ? url : '#'
+  code.value = ''
+  for (const id of ['cpFormId', 'cpFormLabel', 'cpFormType', 'cpFormChannelsAllowed', 'cpFormMode']) {
+    const el = document.getElementById(id)
+    if (el) el.disabled = !!url
+  }
+  const cancelBtn = document.getElementById('cpFormCancelBtn')
+  if (cancelBtn) cancelBtn.hidden = !url && !claudePlanFormEditing
+  setClaudePlanLoginStatus(url ? t('settings.claude_plans.login.waiting_code') : null)
+  syncClaudePlanFormMode()
+}
+
+function setClaudePlanLoginStatus(text) {
+  const el = document.getElementById('cpLoginStatus')
+  if (!el) return
+  el.textContent = text || ''
+  el.hidden = !text
+}
+
+function showClaudePlanFormError(text) {
+  const errEl = document.getElementById('cpFormError')
+  errEl.textContent = text
+  errEl.hidden = false
+}
+
+async function startClaudePlanLogin() {
+  document.getElementById('cpFormError').hidden = true
+  const built = buildClaudePlanLoginStartBody({
+    id: document.getElementById('cpFormId').value,
+    label: document.getElementById('cpFormLabel').value,
+    planType: document.getElementById('cpFormType').value,
+    channelsAllowed: document.getElementById('cpFormChannelsAllowed').checked,
+  })
+  if (built.error) { showClaudePlanFormError(t(built.error)); return }
+  const addBtn = document.getElementById('cpFormAddBtn')
+  addBtn.disabled = true
+  setClaudePlanLoginStatus(t('settings.claude_plans.login.starting'))
+  try {
+    const res = await fetch('/api/claude-plans/login/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(built.body),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok || !data || typeof data.url !== 'string') {
+      setClaudePlanLoginStatus(null)
+      showClaudePlanFormError(claudePlanLoginErrorText(data))
+      return
+    }
+    showClaudePlanLoginStep(data.url)
+    document.getElementById('cpLoginLink').focus()
+  } catch {
+    setClaudePlanLoginStatus(null)
+    showClaudePlanFormError(t('settings.claude_plans.form.error_generic'))
+  } finally {
+    addBtn.disabled = false
+  }
+}
+
+async function submitClaudePlanLoginCode() {
+  const codeEl = document.getElementById('cpLoginCode')
+  const code = codeEl.value.trim()
+  if (!code) return
+  document.getElementById('cpFormError').hidden = true
+  const btn = document.getElementById('cpLoginCodeBtn')
+  btn.disabled = true
+  setClaudePlanLoginStatus(t('settings.claude_plans.login.checking'))
+  try {
+    const res = await fetch('/api/claude-plans/login/code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (res.status === 201 && data) {
+      showToast(t(data.verified ? 'settings.claude_plans.login.done' : 'settings.claude_plans.login.done_unverified', { label: data.label || data.id }))
+      resetClaudePlanForm()
+      await loadClaudePlansList()
+      return
+    }
+    // A mistyped code leaves the login waiting; anything else has ended it.
+    if (data && data.code === 'bad-code') {
+      setClaudePlanLoginStatus(t('settings.claude_plans.login.waiting_code'))
+    } else {
+      showClaudePlanLoginStep(null)
+    }
+    showClaudePlanFormError(claudePlanLoginErrorText(data))
+  } catch {
+    showClaudePlanLoginStep(null)
+    showClaudePlanFormError(t('settings.claude_plans.form.error_generic'))
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function cancelClaudePlanLogin() {
+  try { await fetch('/api/claude-plans/login/cancel', { method: 'POST' }) } catch { /* the server ends it on its own timeout */ }
+  resetClaudePlanForm()
+}
+
+// Coming back to the tab while a login waits for its code: show its link again.
+async function resumeClaudePlanLogin() {
+  try {
+    const res = await fetch('/api/claude-plans/login/status')
+    if (!res.ok) return
+    const data = await res.json()
+    if (data && data.active && typeof data.url === 'string') {
+      document.getElementById('cpFormMode').value = 'login'
+      showClaudePlanLoginStep(data.url)
+    }
+  } catch { /* status is a convenience */ }
 }
 
 // POST /api/claude-plans/rotate for the main agent (agentId defaults to it
