@@ -25,7 +25,7 @@ vi.mock('../web/agent-process.js', () => ({
   startAgentProcess: async (n: string, o: unknown) => { startSpy(n, o); running.add(n); return { ok: true } },
 }))
 vi.mock('../web/agent-config.js', async (orig) => ({ ...(await orig<typeof import('../web/agent-config.js')>()), listAgentNames: () => ['samu', 'zara', 'iris', 'marveen', 'kint'], readAgentRemoteHost: (n: string) => (n === 'kint' ? 'vps.example' : null) }))
-const notifySpy = vi.hoisted(() => vi.fn(async () => {}))
+const notifySpy = vi.hoisted(() => vi.fn(async (_text: string) => {}))
 vi.mock('../notify.js', async (orig) => ({ ...(await orig<typeof import('../notify.js')>()), notifyOwner: notifySpy }))
 
 const { initDatabase, getDb } = await import('../db.js')
