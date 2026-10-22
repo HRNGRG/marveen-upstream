@@ -27,7 +27,7 @@ A gazda minden kapcsoláskor értesítést kap a gazda-csatornán. A változás 
 ## 🛠 Hogyan működik
 
 - **A kapcsoló egy fájl:** `store/fleet-freeze.json`. Amíg létezik, a flotta fagyasztva van. Egy olvashatatlan fájl is fagyasztást jelent.
-- **Az ügynököknél:** egy PreToolUse hook (matcher `*`) minden eszközhívást 2-es kóddal elutasít, amíg a fájl létezik. Az al-ügynökök a `templates/settings.json.template`-ből kapják, a fő ügynök a projekt `.claude/settings.json`-jából. A hook egy egysoros shell-teszt, nincs benne értelmező, ami elromolhatna.
+- **Az ügynököknél:** egy PreToolUse hook (matcher `*`) minden eszközhívást 2-es kóddal elutasít, amíg a fájl létezik. Az al-ügynökök a `templates/settings.json.template`-ből kapják, a fő ügynök a projekt `.claude/settings.json`-jából. A hook (`scripts/hooks/fleet-freeze-gate.sh`) egy rövid shell-szkript: egyetlen fájl-ellenőrzés, nincs benne értelmező, ami elromolhatna.
 - **A dashboardon:** a háttér-ciklusok a `whileNotFrozen` / `frozenSkip` kapun mennek át (`src/web/fleet-freeze.ts`). A HTTP-szerver, a belépés, ez az API, az adatbázis és a naplók futnak tovább.
 - **Vészkijárat a gépen:** a `store/fleet-freeze.json` törlése feloldja a fagyasztást (a leállított ügynököket ilyenkor kézzel, vagy a desired-state figyelő indítja újra).
 

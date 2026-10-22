@@ -16,8 +16,8 @@
 // exactly those again. The main agent is never stopped, only frozen (owner
 // decision 2026-10-22: its launchd unit is not part of this).
 //
-// The file's EXISTENCE is the switch, on purpose: the hook is a one-line shell
-// test with no interpreter to fail, and an unreadable file still counts as
+// The file's EXISTENCE is the switch, on purpose: the hook
+// (scripts/hooks/fleet-freeze-gate.sh) is one file test in bash, with no interpreter to fail, and an unreadable file still counts as
 // frozen here (fail-closed).
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
