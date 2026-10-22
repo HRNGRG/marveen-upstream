@@ -112,7 +112,7 @@ import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } f
 import { withSessionSendLock } from './session-send-lock.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { decideUsageLimitGate, USAGE_LIMIT_PROBE_INTERVAL_MS, type UsageLimitEpisode } from '../usage-limit-gate.js'
-import { frozenSkip } from './fleet-freeze.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -2229,10 +2229,9 @@ export function runHeartbeatGapCheck(nowMs: number = Date.now()): string[] {
 }
 
 export function startHeartbeatGapGuard(): ReturnType<typeof setInterval> {
-  return setInterval(() => {
-    if (frozenSkip('heartbeat-gap-guard')) return
+  return setInterval(whileNotFrozen('heartbeat-gap-guard', () => {
     try { runHeartbeatGapCheck() } catch (err) { logger.warn({ err }, 'HBFABRIC1003: heartbeat gap check failed') }
-  }, HEARTBEAT_GAP_CHECK_INTERVAL_MS)
+  }), HEARTBEAT_GAP_CHECK_INTERVAL_MS)
 }
 
 export async function runScheduledTaskNow(
@@ -3418,5 +3417,5 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
   // Run immediately on start (catches missed tasks)
   setTimeout(() => { void runCheck() }, 5000)
-  return setInterval(() => { if (frozenSkip('schedule-runner')) return; void runCheck() }, SCHEDULE_TICK_MS)
+  return setInterval(whileNotFrozen('schedule-runner', () => { void runCheck() }), SCHEDULE_TICK_MS)
 }

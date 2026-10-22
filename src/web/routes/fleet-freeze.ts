@@ -17,7 +17,7 @@ import { MAIN_AGENT_ID } from '../../config.js'
 import { logConfigChange } from '../../db.js'
 import { logger } from '../../logger.js'
 import { notifyOwner } from '../../notify.js'
-import { listAgentNames } from '../agent-config.js'
+import { listAgentNames, readAgentRemoteHost } from '../agent-config.js'
 import { agentHasChannel, isAgentRunning, startAgentProcess, stopAgentProcess } from '../agent-process.js'
 import {
   REASON_MAX, clearFleetFreeze, readFleetFreeze, writeFleetFreeze,
@@ -36,6 +36,15 @@ function actorOf(auth: RouteContext['auth']): string {
   if (auth.kind === 'session') return `session:${auth.user ?? '?'}`
   if (auth.kind === 'device') return `device:${auth.device ?? '?'}`
   return auth.agent ? `token:${auth.agent}` : 'token'
+}
+
+/**
+ * Agents that run on ANOTHER machine (agent-config remote.host): their hook runs
+ * there and never sees this install's freeze file, so a freeze does not reach
+ * their tool calls. They are named in the answer and in the owner notice.
+ */
+export function remoteAgents(): string[] {
+  return listAgentNames().filter((n) => n !== MAIN_AGENT_ID && readAgentRemoteHost(n) !== null)
 }
 
 /** The sub-agents whose sessions run now (never the main agent). */
@@ -69,10 +78,12 @@ export async function pullFleetBrake(mode: FleetFreezeMode, reason: string, by: 
   }
   logConfigChange('fleet.freeze', prev ? JSON.stringify(prev) : null, JSON.stringify(state), by)
   logger.warn({ mode: state.mode, by, reason }, 'FLEET FROZEN')
+  const remote = remoteAgents()
   if (!prev || prev.mode !== state.mode) {
     void notifyOwner(
       `🛑 A flotta ${state.mode === 'stop' ? 'LEÁLLÍTVA' : 'FAGYASZTVA'} (${by}): ${reason}\n` +
-      'Az ügynökök nem futtathatnak eszközt, a háttér-ciklusok állnak. Feloldás: dashboard, bejelentkezve.',
+      'Az ügynökök nem futtathatnak eszközt, a háttér-ciklusok állnak. Feloldás: dashboard, bejelentkezve.' +
+      (remote.length ? `\nNEM fagyasztva (másik gépen futnak, ott a hook nem látja): ${remote.join(', ')}.` : ''),
     ).catch(() => {})
   }
   return state
@@ -84,7 +95,7 @@ export async function tryHandleFleetFreeze(ctx: RouteContext): Promise<boolean> 
 
   if (path === '/api/fleet/freeze' && method === 'GET') {
     const state = readFleetFreeze()
-    json(res, { frozen: state !== null, state })
+    json(res, { frozen: state !== null, state, notFrozen: state ? remoteAgents() : [] })
     return true
   }
 
@@ -111,7 +122,7 @@ export async function tryHandleFleetFreeze(ctx: RouteContext): Promise<boolean> 
     }
     const mode: FleetFreezeMode = body.mode === 'stop' ? 'stop' : 'freeze'
     const state = await pullFleetBrake(mode, reason, actorOf(auth))
-    json(res, { ok: true, frozen: true, state })
+    json(res, { ok: true, frozen: true, state, notFrozen: remoteAgents() })
     return true
   }
 

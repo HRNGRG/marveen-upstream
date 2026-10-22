@@ -24,7 +24,7 @@ vi.mock('../web/agent-process.js', () => ({
   stopAgentProcess: async (n: string) => { stopSpy(n); running.delete(n); return { ok: true } },
   startAgentProcess: async (n: string, o: unknown) => { startSpy(n, o); running.add(n); return { ok: true } },
 }))
-vi.mock('../web/agent-config.js', async (orig) => ({ ...(await orig<typeof import('../web/agent-config.js')>()), listAgentNames: () => ['samu', 'zara', 'iris', 'marveen'] }))
+vi.mock('../web/agent-config.js', async (orig) => ({ ...(await orig<typeof import('../web/agent-config.js')>()), listAgentNames: () => ['samu', 'zara', 'iris', 'marveen', 'kint'], readAgentRemoteHost: (n: string) => (n === 'kint' ? 'vps.example' : null) }))
 const notifySpy = vi.hoisted(() => vi.fn(async () => {}))
 vi.mock('../notify.js', async (orig) => ({ ...(await orig<typeof import('../notify.js')>()), notifyOwner: notifySpy }))
 
@@ -193,27 +193,92 @@ describe('the loops', () => {
     expect(readFleetFreeze()).toMatchObject({ mode: 'freeze' })
   })
 
-  // The binding: every loop that acts on agents carries the gate in its tick.
+  // The binding: every loop that acts on agents carries the gate in its tick, in
+  // the shape that has the effect (a wrapper the timer actually calls, or an
+  // early return), not just the name somewhere in the file.
   const SRC = join(__dirname, '..')
   it.each([
-    ['web/message-router.ts', "frozenSkip('message-router')"],
-    ['web/schedule-runner.ts', "frozenSkip('schedule-runner')"],
-    ['web/schedule-runner.ts', "frozenSkip('heartbeat-gap-guard')"],
-    ['web/auto-restart-runner.ts', "whileNotFrozen('auto-restart', sweep)"],
-    ['web/reauth-healer.ts', "whileNotFrozen('reauth-healer', sweep)"],
-    ['web/context-guard-runner.ts', "whileNotFrozen('context-guard', sweep)"],
-    ['web/context-restart-gate-runner.ts', "frozenSkip('context-restart-gate')"],
-    ['web/model-fallback-runner.ts', "whileNotFrozen('model-fallback', sweep)"],
-    ['web/inbox-nudge-watcher.ts', "frozenSkip('inbox-nudge')"],
-    ['web/stuck-input-watcher.ts', "frozenSkip('stuck-input')"],
-    ['web/stuck-tool-call-watcher.ts', "frozenSkip('stuck-tool-call')"],
-    ['web/channel-monitor.ts', "frozenSkip('channel-monitor')"],
-    ['web/channel-health-monitor.ts', "whileNotFrozen('channel-health', check)"],
-    ['web/worker-liveness.ts', "whileNotFrozen('worker-liveness', tick)"],
-    ['web/federation/poller.ts', "frozenSkip('federation-poller')"],
-    ['web/federation/capability-runner.ts', "whileNotFrozen('capability-runner', tick)"],
-  ])('%s gates its tick (%s)', (file, needle) => {
-    expect(readFileSync(join(SRC, file), 'utf-8')).toContain(needle)
+    ['web/message-router.ts', /setInterval\(whileNotFrozen\('message-router', async \(\) => \{/],
+    ['web/schedule-runner.ts', /setInterval\(whileNotFrozen\('schedule-runner', \(\) => \{ void runCheck\(\) \}\), SCHEDULE_TICK_MS\)/],
+    ['web/schedule-runner.ts', /setInterval\(whileNotFrozen\('heartbeat-gap-guard', \(\) => \{/],
+    ['web/auto-restart-runner.ts', /setInterval\(whileNotFrozen\('auto-restart', sweep\), INTERVAL_MS\)/],
+    ['web/reauth-healer.ts', /setInterval\(whileNotFrozen\('reauth-healer', sweep\), PROBE_INTERVAL_MS\)/],
+    ['web/context-guard-runner.ts', /setInterval\(whileNotFrozen\('context-guard', sweep\), INTERVAL_MS\)/],
+    ['web/context-restart-gate-runner.ts', /if \(frozenSkip\('context-restart-gate'\)\) \{\s*scheduleSweep\(name, DISABLED_RECHECK_MS\)\s*return\s*\}/],
+    ['web/model-fallback-runner.ts', /setInterval\(whileNotFrozen\('model-fallback', sweep\), INTERVAL_MS\)/],
+    ['web/inbox-nudge-watcher.ts', /setInterval\(whileNotFrozen\('inbox-nudge', \(\) => \{ void tick\(\) \}\), INBOX_NUDGE_INTERVAL_MS\)/],
+    ['web/stuck-input-watcher.ts', /setInterval\(whileNotFrozen\('stuck-input', \(\) => \{ void sweep\(\) \}\), INTERVAL_MS\)/],
+    ['web/stuck-tool-call-watcher.ts', /setInterval\(whileNotFrozen\('stuck-tool-call', \(\) => \{ void sweep\(\) \}\), INTERVAL_MS\)/],
+    ['web/channel-monitor.ts', /setInterval\(whileNotFrozen\('channel-monitor', \(\) => \{ void check\(\) \}\), 60000\)/],
+    ['web/channel-health-monitor.ts', /setInterval\(whileNotFrozen\('channel-health', check\), 60_000\)/],
+    ['web/worker-liveness.ts', /setInterval\(whileNotFrozen\('worker-liveness', tick\), LIVENESS_POLL_MS\)/],
+    ['web/federation/poller.ts', /setInterval\(whileNotFrozen\('federation-poller', \(\) => \{ refreshFederationStatus\(\)/],
+    ['web/federation/capability-runner.ts', /setInterval\(whileNotFrozen\('capability-runner', tick\), CAPABILITY_RUNNER_INTERVAL_MS\)/],
+  ])('%s gates its tick in the effective shape (%s)', (file, re) => {
+    const src = readFileSync(join(SRC, file), 'utf-8')
+    expect(src).toMatch(re)
+    // and the timer is started only once, through the gate
+    expect(src.match(/return setInterval\(/g)?.length ?? 0).toBeLessThanOrEqual(2)
+  })
+
+  // Behaviour, not text, for the timer wiring of the three loops that matter most:
+  // a fake clock drives the real start function; frozen, the wrapped body never runs.
+  it('a wrapper handed to setInterval runs nothing while frozen, and runs again after', async () => {
+    vi.useFakeTimers()
+    try {
+      const body = vi.fn()
+      const t = setInterval(whileNotFrozen('fake-loop', body), 1000)
+      await freeze(TOKEN)
+      vi.advanceTimersByTime(3000)
+      expect(body).not.toHaveBeenCalled()
+      rmSync(FLEET_FREEZE_PATH)
+      vi.advanceTimersByTime(2000)
+      expect(body).toHaveBeenCalledTimes(2)
+      clearInterval(t)
+    } finally { vi.useRealTimers() }
+  })
+})
+
+describe("the dashboard's own Claude calls and the worker session", () => {
+  it('runAgent refuses while frozen and starts no worker turn', async () => {
+    const runViaWorker = vi.fn(async () => ({ text: 'ok' }))
+    vi.doMock('../web/agent-worker.js', async (orig) => ({ ...(await orig<typeof import('../web/agent-worker.js')>()), runViaWorker }))
+    const { runAgent } = await import('../agent.js')
+    await freeze(TOKEN)
+    expect(await runAgent('napi naplo', undefined, undefined, true)).toEqual({ text: null, error: 'fleet frozen (KILLSWITCH1022)' })
+    expect(runViaWorker).not.toHaveBeenCalled()
+    rmSync(FLEET_FREEZE_PATH)
+    expect((await runAgent('napi naplo')).text).toBe('ok')
+    expect(runViaWorker).toHaveBeenCalledTimes(1)
+    vi.doUnmock('../web/agent-worker.js')
+  })
+
+  it("the worker's own settings get the gate first in PreToolUse, once, and keep everything else", async () => {
+    const { withFleetFreezeGate, WORKER_FREEZE_GATE_CMD } = await import('../web/agent-worker.js')
+    const other = { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo other' }] }
+    const once = withFleetFreezeGate({ enabledPlugins: { x: false }, hooks: { PreToolUse: [other], Stop: [{ hooks: [] }] } })
+    const twice = withFleetFreezeGate(once)
+    const pre = (twice.hooks as any).PreToolUse
+    expect(pre).toHaveLength(2)
+    expect(pre[0]).toEqual({ matcher: '*', hooks: [{ type: 'command', command: WORKER_FREEZE_GATE_CMD, timeout: 5 }] })
+    expect(pre[1]).toEqual(other)
+    expect((twice.hooks as any).Stop).toEqual([{ hooks: [] }])
+    expect(twice.enabledPlugins).toEqual({ x: false })
+    expect(WORKER_FREEZE_GATE_CMD).toContain(join('scripts', 'hooks', 'fleet-freeze-gate.sh'))
+  })
+
+  it('ensureWorkerCwd writes the worker settings through withFleetFreezeGate', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'agent-worker.ts'), 'utf-8')
+    expect(src).toMatch(/writeFileSync\(settingsPath, JSON\.stringify\(withFleetFreezeGate\(\{/)
+  })
+})
+
+describe('agents on another machine', () => {
+  it('are named as not frozen in the answer, the status and the owner notice', async () => {
+    const r = await freeze(TOKEN)
+    expect(r.json.notFrozen).toEqual(['kint'])
+    expect((await call('GET', '/api/fleet/freeze', TOKEN)).json.notFrozen).toEqual(['kint'])
+    expect(String(notifySpy.mock.calls[0]![0])).toMatch(/NEM fagyasztva.*kint/)
   })
 })
 
