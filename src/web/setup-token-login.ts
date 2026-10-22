@@ -335,7 +335,6 @@ export class SetupTokenLogin {
   private catchToken(streamEnded: boolean): void {
     const token = extractSetupToken(this.buf, streamEnded)
     if (!token) return
-    this.buf = ''
     const deliver = this.onToken
     this.finish('done', null)
     deliver?.(token)

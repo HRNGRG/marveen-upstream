@@ -104,8 +104,9 @@ describe('setup-token PTY relay (real python3, stub claude)', () => {
     expect(readFileSync(codeFile, 'utf-8')).toBe('Code123_abc#state456')
 
     // The stub stays open after the token; closing the PTY must still end it,
-    // and the temp root goes with it.
-    await waitFor(() => !existsSync(root))
+    // and the temp root goes with it -- well inside the 5 s SIGKILL net, so it
+    // is the stdin EOF that ends it, not the net.
+    await waitFor(() => !existsSync(root), 3000)
     expect(tempRoots().filter((n) => !before.has(n))).toEqual([])
   }, 20_000)
 
@@ -116,7 +117,7 @@ describe('setup-token PTY relay (real python3, stub claude)', () => {
     const root = dirname(JSON.parse(readFileSync(report, 'utf-8')).configDir)
     login.cancel()
     expect(login.getError()).toBe('cancelled')
-    await waitFor(() => !existsSync(root))
+    await waitFor(() => !existsSync(root), 3000)
   }, 20_000)
 
   it('a missing claude binary is a launch failure, not a hang', async () => {
