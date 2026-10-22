@@ -62,13 +62,15 @@ párosított kulcsokat is visszavonja, de az SSH-sorokat nem bántja -- azok a
 kulcs nélkül csak egy zárt alagutat adnak, és a következő párosítás
 install-id alapján felülírja őket.
 
-## HTTP break-glass (token birtokában)
+## HTTP-n nincs jelszó-reset a régi jelszó nélkül
 
-A dashboard-token birtokosa a `POST /api/auth/password` végponton
-`current_password` nélkül, `username` megadásával állíthat át jelszót. Ez is
-auditált (`security.break_glass_password_reset`) és csatorna-értesítést küld.
-Csak `token` hitelesítéssel érhető el -- session, eszközkulcs vagy federation
-principal 403-at kap.
+A `POST /api/auth/password` végpont csak bejelentkezett sessionnel, a jelenlegi
+jelszó megadásával állít át jelszót. A dashboard-tokennel ez 403
+(`cli_recovery_only`): a token nem különbözteti meg a gazdát mástól, aki
+birtokolja. Ugyanígy, ha már van dashboard-login, a token nem ad ki
+eszközkulcsot, nem párosít Bridge-et, és nem vesz fel vagy töröl felhasználót;
+ezekhez a gazda sessionje kell. Elfelejtett jelszónál a helyreállítás útja a
+fenti CLI: `npm run dashboard-user -- reset-password <felhasználó>`.
 
 ## Audit
 

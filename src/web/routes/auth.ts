@@ -5,10 +5,11 @@
 // (setup_required:true). Login enforcement becomes available -- never required,
 // the bearer token always works -- once the operator creates a user.
 //
-// The bearer token stays the break-glass credential: creating the FIRST user
-// and resetting a password are reachable with a valid bearer, so there is never
-// an unauthenticated first-run setup page (which would be a claim-the-admin race
-// on loopback).
+// The bearer token creates the FIRST user, so there is never an unauthenticated
+// first-run setup page (which would be a claim-the-admin race on loopback).
+// Resetting a password without the current one is NOT reachable over HTTP: the
+// owner's recovery path is the machine-local CLI, npm run dashboard-user --
+// reset-password <username> (DEVKEYMINT1022).
 // Once a user exists, issuing credentials and adding or removing users take the
 // owner's session instead (mayIssueCredentials, DEVKEYMINT1022).
 //
@@ -63,7 +64,6 @@ import {
   deleteDashboardUser,
   logConfigChange,
 } from '../../db.js'
-import { notifySecurityEvent } from '../../notify.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -139,6 +139,11 @@ export function mayIssueCredentials(auth: RouteContext['auth'], req?: http.Incom
   if (countDashboardUsers(true) === 0) return true
   const cookie = req ? parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] : undefined
   return !!cookie && resolveSession(cookie) !== null
+}
+
+export const CLI_RECOVERY_ONLY = {
+  error: 'Resetting a password needs the dashboard login and the current password. Without them, recover on the machine itself: npm run dashboard-user -- reset-password <username>.',
+  code: 'cli_recovery_only',
 }
 
 export const OWNER_SESSION_REQUIRED = {
@@ -285,15 +290,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         return true
       }
     } else if (auth?.kind === 'token') {
-      // Bearer break-glass: may omit current_password but must name the target.
-      // EXPLICITLY token-only -- a reset without the current password is the
-      // strongest action here and must never leak to weaker credential kinds.
-      const username = str(body.username)
-      user = username ? getDashboardUser(username) : undefined
-      if (!user) {
-        json(res, { error: 'User not found' }, 404)
-        return true
-      }
+      // The token cannot reset a password: it cannot tell the owner apart from
+      // anything else that holds it. Recovery is the machine-local CLI.
+      logger.warn({ agent: auth.agent }, 'password reset via bearer token refused (recovery is the CLI)')
+      json(res, CLI_RECOVERY_ONLY, 403)
+      return true
     } else {
       json(res, FORBIDDEN_KIND, 403)
       return true
@@ -310,16 +311,6 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // Revoke every other session of this user; keep the caller's own if present.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
     revokeAllForUser(user.id, presented ?? undefined)
-    if (auth?.kind === 'token') {
-      // Break-glass reset (no current_password proven): leave a durable audit
-      // row and ping the operator's channel. Only the username goes into the
-      // trail, never credential material. Fire-and-forget: the reset must
-      // succeed with or without a wired channel (notifySecurityEvent is
-      // silent when none is configured).
-      logConfigChange('security.break_glass_password_reset', null, user.username, 'token')
-      logger.warn({ username: user.username }, 'break-glass password reset via bearer token')
-      void notifySecurityEvent(`🔑 Break-glass jelszó-reset a dashboardon: "${user.username}" jelszavát a hozzáférési tokennel állították át. Ha nem te voltál, futtasd: npm run dashboard-user -- security:reset`)
-    }
     json(res, { ok: true })
     return true
   }
