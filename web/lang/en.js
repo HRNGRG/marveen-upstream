@@ -2129,6 +2129,7 @@ window._i18n.en = {
   'auth.bridge.err.host_url':                    '\"{seen}\" is a URL. Enter only the address, without http:// or a path.',
   'auth.bridge.err.host_invalid':                '\"{seen}\" is not a valid IP address or hostname.',
   'auth.bridge.err.forbidden_credential':        'This sign-in may not pair a device. Log in to the dashboard and start the pairing from there.',
+  'auth.bridge.err.owner_session_required':      'Pairing needs the dashboard login. The access token can pair only before the first login exists. Log in, and if this browser also keeps the access token, remove it.',
   'auth.bridge.err.invalid_json':                'The request was malformed. Reload the page and try again.',
   'auth.bridge.err.key_line_required':           'The key line is required. Paste the ssh-ed25519 ... marveen-remote:... line shown in the Bridge app.',
   'auth.bridge.err.invalid_name':                'The device name may be 1-64 characters: letters, digits, space, and . _ -',

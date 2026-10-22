@@ -9,6 +9,8 @@
 // and resetting a password are reachable with a valid bearer, so there is never
 // an unauthenticated first-run setup page (which would be a claim-the-admin race
 // on loopback).
+// Once a user exists, issuing credentials and adding or removing users take the
+// owner's session instead (mayIssueCredentials, DEVKEYMINT1022).
 //
 // Principal discipline: every handler that grants or removes access checks the
 // caller's auth kind against an EXPLICIT allowlist. Only 'token' and 'session'
@@ -33,6 +35,7 @@ import {
   revokeSession,
   revokeAllForUser,
   listUserSessions,
+  resolveSession,
 } from '../auth-sessions.js'
 import {
   checkThrottle,
@@ -119,6 +122,29 @@ const USER_ADMIN_KINDS = ['token', 'session'] as const
 // and deliberately NOT 'device': a device key that could mint further keys
 // would turn one leaked device into unlimited, unexpiring access.
 const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
+
+// DEVKEYMINT1022: issuing a credential (a device key, a Bridge pairing) and adding
+// or removing a dashboard user GRANT access, and the bearer token cannot tell the
+// owner apart from anything else that holds it. So once a dashboard login exists,
+// these take the owner's session. The token keeps them only for the first-run
+// setup (no user yet), where it is the one credential there is. The machine-local
+// CLI (npm run dashboard-user, npm run remote-enroll) stays the break-glass.
+// Counted with the disabled users too: a disabled account still means a login was
+// set up, so it must not reopen the first-run path.
+// A logged-in owner whose browser also keeps the access token sends both: the
+// gate resolves the bearer first, so the session cookie is checked here as well.
+export function mayIssueCredentials(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
+  if (auth?.kind === 'session') return true
+  if (auth?.kind !== 'token') return false
+  if (countDashboardUsers(true) === 0) return true
+  const cookie = req ? parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] : undefined
+  return !!cookie && resolveSession(cookie) !== null
+}
+
+export const OWNER_SESSION_REQUIRED = {
+  error: 'This needs the dashboard login (an owner session). The access token can do it only before the first login exists; on the machine itself, npm run dashboard-user is the break-glass.',
+  code: 'owner_session_required',
+}
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
@@ -312,6 +338,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     let body: Record<string, unknown>
     try {
       body = await parseJsonBody(req)
@@ -354,6 +384,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/auth/device-keys' && method === 'POST') {
     if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
     let body: Record<string, unknown>
@@ -433,6 +467,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   if (delMatch && method === 'DELETE') {
     if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
     const username = decodeURIComponent(delMatch[1]!)

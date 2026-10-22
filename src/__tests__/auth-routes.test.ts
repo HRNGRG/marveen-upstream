@@ -270,7 +270,8 @@ describe('users CRUD', () => {
 
   it('rejects a duplicate username with 409', async () => {
     await seedUser('alice')
-    const dup = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'alice', password: GOOD_PW } })
+    // a second user is added by the owner's session once a login exists (DEVKEYMINT1022)
+    const dup = await call('POST', '/api/auth/users', { auth: { kind: 'session', user: 'alice' }, body: { username: 'alice', password: GOOD_PW } })
     expect(dup.res.statusCode).toBe(409)
   })
 
@@ -292,7 +293,11 @@ describe('users CRUD', () => {
     await seedUser('alice')
     const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
     const token = cookieToken(login.res)
-    const del = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
+    // the token no longer removes a user once a login exists (DEVKEYMINT1022)
+    const byToken = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
+    expect(byToken.res.statusCode).toBe(403)
+    expect(getDashboardUser('alice')).toBeDefined()
+    const del = await call('DELETE', '/api/auth/users/alice', { auth: { kind: 'session', user: 'alice' } })
     expect(del.res.statusCode).toBe(200)
     expect(getDashboardUser('alice')).toBeUndefined()
     expect(resolveSession(token)).toBeNull()
