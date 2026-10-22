@@ -2772,7 +2772,11 @@ function buildAutonomyBody(name: string): string {
     '',
     'Döntés lekérdezése (GET, 60 mp-enként ismételve):',
     `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/approvals/<id>"`,
-    'status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
+    'status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
+    'status=approved -> a jóváhagyás EGYSZER használható: MIELŐTT cselekszel, használd fel (APPROVALCONSUME1022):',
+    `curl -s -X POST ${dashboardOrigin}/api/approvals/<id>/consume -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"CATEGORY_KEY","consumer":"${name}"}'`,
+    'Csak HTTP 200 után végezd el a műveletet. 409 (already_consumed, expired, not_approved, hash_mismatch) = NE csináld: kérj új jóváhagyást.',
+    'Ha a kérésben content_hash volt, a felhasználásban is ugyanazt add meg. Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
     '',
     '**Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.',
   ].join('\n')

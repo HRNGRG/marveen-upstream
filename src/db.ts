@@ -7264,7 +7264,20 @@ export const CATEGORY_CONSUME_MAX_WINDOW_S = 24 * 3600
 // category in a generic call.
 export const SERVER_CONSUMED_CATEGORIES: readonly string[] = ['email_send', 'data_delete']
 
-// One-shot consumption for every category other than SERVER_CONSUMED_CATEGORIES.
+// Categories that are a STANDING decision, not a one-off permission: the owner's
+// LAST resolved decision on the anchor wins, and a later rejection revokes it
+// (email_standing_recipient: scripts/hooks/email-approval-gate.py; credential_alias:
+// scripts/hooks/credential-gate.py). Their readers never look at consumed_at, so a
+// generic consume of such a row would change nothing they do, but it would mark a
+// standing decision "used" in the audit trail. Refused as wrong_category
+// (APPROVALCONSUME1022), like the server-consumed ones.
+export const STANDING_DECISION_CATEGORIES: readonly string[] = ['email_standing_recipient', 'credential_alias']
+
+// Every category the generic consume below refuses.
+const NOT_GENERICALLY_CONSUMED: readonly string[] = [...SERVER_CONSUMED_CATEGORIES, ...STANDING_DECISION_CATEGORIES]
+
+// One-shot consumption for every category other than SERVER_CONSUMED_CATEGORIES
+// and STANDING_DECISION_CATEGORIES.
 // Without it a tool acting on such an approval could only check the row with a
 // GET and keep its own "already used" list, so a replay from another tool, a
 // lost log or a second checkout could reuse one approval. Same shape as
@@ -7283,13 +7296,13 @@ export function consumeCategoryApproval(params: {
 }): ApprovalConsumeResult {
   const now = params.nowS ?? Math.floor(Date.now() / 1000)
   const ref = params.ref ?? null
-  const excluded = SERVER_CONSUMED_CATEGORIES.map(() => '?').join(', ')
+  const excluded = NOT_GENERICALLY_CONSUMED.map(() => '?').join(', ')
   return db.transaction((): ApprovalConsumeResult => {
     const changes = db.prepare(`
       UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
        WHERE id = ? AND category = ? AND category NOT IN (${excluded}) AND status = 'approved' AND consumed_at IS NULL
          AND content_hash IS ? AND resolved_at IS NOT NULL AND resolved_at >= ?
-    `).run(now, params.consumer, ref, params.id, params.category, ...SERVER_CONSUMED_CATEGORIES, params.contentHash, now - params.windowSeconds).changes
+    `).run(now, params.consumer, ref, params.id, params.category, ...NOT_GENERICALLY_CONSUMED, params.contentHash, now - params.windowSeconds).changes
     const event = db.prepare(`
       INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
     `)
@@ -7300,7 +7313,7 @@ export function consumeCategoryApproval(params: {
     }
     let reason: ApprovalConsumeRefusal
     if (!row) reason = 'not_found'
-    else if (row.category !== params.category || SERVER_CONSUMED_CATEGORIES.includes(row.category)) reason = 'wrong_category'
+    else if (row.category !== params.category || NOT_GENERICALLY_CONSUMED.includes(row.category)) reason = 'wrong_category'
     else if (row.consumed_at != null) reason = 'already_consumed'
     else if (row.status !== 'approved') reason = 'not_approved'
     else if ((row.content_hash ?? null) !== params.contentHash) reason = 'hash_mismatch'

@@ -110,6 +110,17 @@ describe('consumeCategoryApproval', () => {
     expect(consumeApproval({ id: 'c5', contentHash: HASH, consumer: 'send-tool', windowSeconds: 1800 }).ok).toBe(true)
   })
 
+  // APPROVALCONSUME1022: a standing decision (the owner's last word on an anchor wins)
+  // is not a one-off permission; the generic consume refuses it, by its own name or another.
+  it.each(['email_standing_recipient', 'credential_alias'])('a %s row is a standing decision and is NEVER consumed here', (cat) => {
+    const id = `cs-${cat}`
+    approval(id, { category: cat })
+    expect(consumeCategoryApproval({ id, category: cat, contentHash: HASH, consumer: 't', windowSeconds: W })).toMatchObject({ ok: false, reason: 'wrong_category' })
+    expect(consumeCategoryApproval({ id, category: CAT, contentHash: HASH, consumer: 't', windowSeconds: W })).toMatchObject({ ok: false, reason: 'wrong_category' })
+    expect(getApproval(id)!.consumed_at).toBeNull()
+    expect(getApproval(id)!.status).toBe('approved')
+  })
+
   it('a data_delete row is NEVER consumed here: the memory DELETE route is its only consumer', () => {
     approval('c5d', { category: 'data_delete' })
     expect(consumeCategoryApproval({ id: 'c5d', category: 'data_delete', contentHash: HASH, consumer: 't', windowSeconds: W })).toMatchObject({ ok: false, reason: 'wrong_category' })

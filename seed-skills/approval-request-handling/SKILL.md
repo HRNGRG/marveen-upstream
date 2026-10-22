@@ -100,6 +100,13 @@ curl -s -X POST "http://localhost:$PORT/api/approvals" \
 - **Több párhuzamos kérés esetén az `id` a horgony**, nem a sorrend. Ha két kérés
   fut, és a tulajdonos csak annyit ír, hogy "IGEN", **kérdezz vissza, melyikre** --
   ne tippelj.
+- **A jóváhagyás egyszer használatos (APPROVALCONSUME1022).** A kérő ágens a jóváhagyott
+  kérést cselekvés ELŐTT felhasználja: `POST /api/approvals/<id>/consume`
+  (`{"category":"<key>","consumer":"<ágens>"}`), és csak 200 után cselekszik; 409 = nem
+  cselekszik. Ha egy ágens azt írja, hogy egy jóváhagyással másodszor is cselekedne,
+  az új kérés, nem a régi ismétlése. Kivétel: az `email_send` és a `data_delete` sort a
+  szerver a saját útján használja fel; az állandó döntés (`email_standing_recipient`,
+  `credential_alias`) nem fogy el, ott a gazda utolsó döntése számít.
 - **A `Bearer` token soha ne kerüljön a csatornára** vagy logba: mindig
   `$(cat <install>/store/.dashboard-token)` formában add át.
 
