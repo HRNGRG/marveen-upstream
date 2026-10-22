@@ -15927,6 +15927,11 @@ async function renderClaudePlansPanel(body) {
         <div class="claude-plans-form-hint">${t('settings.claude_plans.login.hint')}</div>
         <div id="cpLoginStep" class="claude-plans-login-step" hidden>
           <a class="btn-secondary btn-compact" id="cpLoginLink" href="#" target="_blank" rel="noopener noreferrer">${t('settings.claude_plans.login.open_link')}</a>
+          <label for="cpLoginUrl">${t('settings.claude_plans.login.copy_hint')}</label>
+          <div class="form-row">
+            <input class="input" id="cpLoginUrl" style="flex:1" readonly spellcheck="false">
+            <button class="btn-secondary btn-compact" id="cpLoginCopyBtn">${t('settings.claude_plans.login.copy_btn')}</button>
+          </div>
           <label for="cpLoginCode">${t('settings.claude_plans.login.code')}</label>
           <div class="form-row">
             <input class="input" id="cpLoginCode" style="flex:1" autocomplete="off" spellcheck="false">
@@ -15961,6 +15966,8 @@ async function renderClaudePlansPanel(body) {
     else resetClaudePlanForm()
   })
   document.getElementById('cpLoginCodeBtn').addEventListener('click', () => submitClaudePlanLoginCode())
+  document.getElementById('cpLoginCopyBtn').addEventListener('click', () => copyClaudePlanLoginUrl())
+  document.getElementById('cpLoginUrl').addEventListener('focus', (e) => e.target.select())
   document.getElementById('cpLoginCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitClaudePlanLoginCode() })
   for (const id of ['cpFormId', 'cpFormLabel', 'cpFormConfigDir', 'cpFormToken']) {
     document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') saveClaudePlan() })
@@ -16175,7 +16182,10 @@ function showClaudePlanLoginStep(url) {
   if (!step || !link || !code) return
   claudePlanLoginActive = !!url
   step.hidden = !url
-  link.href = url && url.startsWith('https://') ? url : '#'
+  const safeUrl = url && url.startsWith('https://') ? url : ''
+  link.href = safeUrl || '#'
+  const urlField = document.getElementById('cpLoginUrl')
+  if (urlField) urlField.value = safeUrl
   code.value = ''
   for (const id of ['cpFormId', 'cpFormLabel', 'cpFormType', 'cpFormChannelsAllowed', 'cpFormMode']) {
     const el = document.getElementById(id)
@@ -16198,6 +16208,20 @@ function showClaudePlanFormError(text) {
   const errEl = document.getElementById('cpFormError')
   errEl.textContent = text
   errEl.hidden = false
+}
+
+// The link is also shown as text, for opening it on another device or in
+// another browser profile (the Claude account to add may live there).
+async function copyClaudePlanLoginUrl() {
+  const field = document.getElementById('cpLoginUrl')
+  if (!field || !field.value) return
+  try {
+    await navigator.clipboard.writeText(field.value)
+    showToast(t('settings.claude_plans.login.copied'))
+  } catch {
+    field.focus()
+    field.select()
+  }
 }
 
 async function startClaudePlanLogin() {

@@ -67,8 +67,16 @@ describe('wiring', () => {
 
   it('the link is set as a property, only for an https URL, never through innerHTML', () => {
     const step = extractFn('showClaudePlanLoginStep')
-    expect(step).toContain("link.href = url && url.startsWith('https://') ? url : '#'")
+    expect(step).toContain("const safeUrl = url && url.startsWith('https://') ? url : ''")
+    expect(step).toContain("link.href = safeUrl || '#'")
+    expect(step).toContain('urlField.value = safeUrl')
     expect(step).not.toContain('innerHTML')
+  })
+
+  it('the link is also shown as read-only text with a copy button', () => {
+    expect(panel).toMatch(/<input [^>]*id="cpLoginUrl"[^>]*readonly/)
+    expect(panel).toContain("addEventListener('click', () => copyClaudePlanLoginUrl())")
+    expect(extractFn('copyClaudePlanLoginUrl')).toContain('navigator.clipboard.writeText(field.value)')
   })
 
   it('the buttons call the login routes', () => {
