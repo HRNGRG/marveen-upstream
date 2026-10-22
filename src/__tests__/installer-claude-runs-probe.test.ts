@@ -78,9 +78,16 @@ function runProbe(src: string, pathDir: string, extraEnv: Record<string, string>
 }
 
 /** The OLD instrument (`--version` with a timeout), kept only as the control. */
+// SUITEFLAKY925: the control must RUN (exit 0: the old gate is fooled), so its
+// timeout must never be what decides it. On the shared 2 s it came back 124
+// under a full-suite load (measured 2026-10-22), the same race PROBEFLAKY924
+// fixed for the healthy case. The mock answers --version at once, so a generous
+// limit costs nothing; the probe side keeps its 2 s, where the timeout firing
+// IS the assertion.
+const OLD_GATE_TIMEOUT_S = 30
 function runOldGate(pathDir: string): number {
   try {
-    execFileSync('bash', ['-c', 'command -v claude >/dev/null 2>&1 && timeout 2 claude --version </dev/null >/dev/null 2>&1'], {
+    execFileSync('bash', ['-c', `command -v claude >/dev/null 2>&1 && timeout ${OLD_GATE_TIMEOUT_S} claude --version </dev/null >/dev/null 2>&1`], {
       env: { ...process.env, PATH: `${pathDir}:${process.env.PATH}` }, stdio: 'ignore',
     })
     return 0
