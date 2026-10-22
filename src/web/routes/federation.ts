@@ -293,8 +293,8 @@ function refuseIfConfigUnhealthy(res: RouteContext['res']): boolean {
 
 // DEVKEYFOLLOW1022: a peer's inbound token admits a REMOTE system into our inbox,
 // so adding a peer, writing the full document (it carries the inbound tokens),
-// rotating and revealing a token, and editing a peer (it re-points its outbound
-// token) are credential issuance, the same as a device
+// rotating and revealing a token, editing a peer (it re-points its outbound
+// token) and switching federation on are credential issuance, the same as a device
 // key (routes/auth.ts, DEVKEYMINT1022): once a dashboard login exists they take
 // the owner's session. On the machine itself store/federation.json stays editable.
 const FED_OWNER_SESSION_REQUIRED = {
@@ -551,6 +551,11 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const payload = await readJsonBody(ctx)
     if (isErr(payload)) return true
     const enabled = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled === true
+    // Switching ON admits the paired peers and starts sending our outbound
+    // tokens: the owner's session once a login exists (Marveen, #2175 review).
+    // Switching OFF only takes away, so it stays open; telling the two apart
+    // needs the (small, capped) body, hence the gate after the read.
+    if (enabled && refuseUnlessOwner(ctx)) return true
     const flipped = setFederationEnabledPreservingFile(enabled)
     if (!flipped) { json(res, { error: 'federation.json failed validation -- federation stays disabled; fix or remove the file' }, 409); return true }
     if (!enabled) {

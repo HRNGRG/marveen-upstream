@@ -71,7 +71,8 @@ birtokolja. Ugyanígy, ha már van dashboard-login, a token nem ad ki
 eszközkulcsot, nem párosít Bridge-et, és nem vesz fel vagy töröl felhasználót;
 ezekhez a gazda sessionje kell. Ugyanez áll a föderációs társ felvételére, a
 teljes föderációs konfig írására (`PUT /api/federation/peers`), a társ
-szerkesztésére (`PATCH`), a társ bejövő tokenjének cseréjére és felfedésére, az operátor-kapcsolók átírására
+szerkesztésére (`PATCH`), a föderáció bekapcsolására, a társ bejövő tokenjének
+cseréjére és felfedésére, az operátor-kapcsolók átírására
 (`PUT /api/operator-access`) és a felhasználónevek listájára
 (`GET /api/auth/users`): mind `owner_session_required` 403. Elfelejtett jelszónál
 a helyreállítás útja a fenti CLI: `npm run dashboard-user -- reset-password <felhasználó>`.

@@ -1,7 +1,7 @@
 // DEVKEYFOLLOW1022: the rest of the credential-issuing routes follow DEVKEYMINT1022.
 // Once a dashboard login exists, issuing a federation peer's inbound token (add,
 // full-document PUT, rotate), revealing it, editing a peer (it re-points the
-// peer's outbound token), widening the operator switches and
+// peer's outbound token), switching federation on, widening the operator switches and
 // listing the usernames take the owner's session; the bearer token keeps them
 // only for the first-run setup (no user yet).
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
@@ -62,6 +62,7 @@ const putDoc = (auth: RouteContext['auth']) => call(tryHandleFederation, 'PUT', 
 const rotate = (auth: RouteContext['auth']) => call(tryHandleFederation, 'POST', '/api/federation/peers/teodor/rotate-inbound-token', auth)
 const reveal = (auth: RouteContext['auth']) => call(tryHandleFederation, 'GET', '/api/federation/peers/teodor/inbound-token', auth)
 const patchPeer = (auth: RouteContext['auth'], body: Record<string, unknown>) => call(tryHandleFederation, 'PATCH', '/api/federation/peers/teodor', auth, body)
+const setEnabled = (auth: RouteContext['auth'], enabled: boolean) => call(tryHandleFederation, 'POST', '/api/federation/enabled', auth, { enabled })
 const putOperator = (auth: RouteContext['auth']) => call(tryHandleOperatorAccess, 'PUT', '/api/operator-access', auth, { enabled: true, agentControl: true })
 const listUsers = (auth: RouteContext['auth'], headers: Record<string, string> = {}) => call(tryHandleAuth, 'GET', '/api/auth/users', auth, undefined, headers)
 
@@ -161,6 +162,19 @@ describe('once a login exists, the token cannot issue a peer token or widen the 
     expect(peer.baseUrl).toBe('https://teodor.example')
     expect(peer.shareCapabilitySummaries).toBeUndefined()
     expect((await patchPeer(DEVICE_AUTH, { baseUrl: 'https://attacker.example' })).status).toBe(403)
+  })
+
+  it('switching federation on is refused, switching it off stays open (Marveen, #2175 review)', async () => {
+    const on = await setEnabled(TOKEN_AUTH, true)
+    expect(on.status).toBe(403)
+    expect(on.json().code).toBe('owner_session_required')
+    expect(getFederationConfig().enabled).toBe(false)
+    expect((await setEnabled(DEVICE_AUTH, true)).status).toBe(403)
+    expect(getFederationConfig().enabled).toBe(false)
+    expect((await setEnabled(SESSION_AUTH, true)).status).toBe(200)
+    expect(getFederationConfig().enabled).toBe(true)
+    expect((await setEnabled(TOKEN_AUTH, false)).status).toBe(200)
+    expect(getFederationConfig().enabled).toBe(false)
   })
 
   it('reading the peers and removing one stay open: they grant nothing', async () => {
