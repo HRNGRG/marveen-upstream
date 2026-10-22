@@ -284,10 +284,14 @@ def main():
         if not args.approval:
             die("KULSO cimzett, es nincs --approval.\n"
                 "      Az `external_message` level=1 ES maxLevel=1 (locked), tehat ez SOHA nem\n"
-                "      autonom. Elobb kerj jovahagyast, a cimzett szamaval a leirasban:\n"
-                "        bash scripts/approval-request.sh --category external_message <<'EOF'\n"
-                f"        SMS-t kuldenek a {to} szamra (SeeMe). A szoveg: \"...\". Indok: ...\n"
-                "        EOF")
+                "      autonom. Elobb kerj jovahagyast, a cimzett szamaval a leirasban\n"
+                "      (idezett heredoc: a szovegben levo backtick vagy $(...) igy nem fut le):\n"
+                f"        curl -s -X POST {DASH_BASE}/api/approvals -H \"Content-Type: application/json\" \\\n"
+                "          -H \"Authorization: Bearer $(cat store/.dashboard-token)\" --data-binary @- <<'JSON'\n"
+                "        {\"agent_id\":\"<a neved>\",\"category\":\"external_message\",\"action_description\":"
+                f"\"SMS-t kuldenek a {to} szamra (SeeMe). A szoveg: ... Indok: ...\",\"timeout_seconds\":3600}}\n"
+                "        JSON\n"
+                "      A valaszban kapott id-vel futtasd ujra: --approval <id>.")
         rec = check_approval(args.approval, to)
         print(f"approval    : {args.approval} -> approved "
               f"(kert: {rec.get('requested_at')}, dontott: {rec.get('resolved_at')})")

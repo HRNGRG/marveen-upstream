@@ -145,6 +145,17 @@ out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to 36305552860 2>&1)"; rc=$?
   && pass "internal number: sent once, no consume call" \
   || fail "internal send must not consume (rc=$rc): $(cat "$REQLOG") $out"
 
+echo "--- the refusal without --approval prints a recipe that exists ---"
+out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to "$EXT" --dry-run 2>&1)"
+json_line="$(echo "$out" | grep -E '^ *\{"agent_id"')"
+if echo "$out" | grep -q "approval-request.sh"; then
+  fail "the refusal still names scripts/approval-request.sh, which does not exist"
+elif echo "$out" | grep -q "/api/approvals" && printf '%s' "$json_line" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["category"]=="external_message" and "'"$EXT"'" in d["action_description"]'; then
+  pass "the refusal prints POST /api/approvals with a valid external_message payload naming the number"
+else
+  fail "the refusal recipe is missing or its payload is not valid JSON: $out"
+fi
+
 echo "--- mutation control: without the consume call the replay sends twice ---"
 MUT="$FIX/seeme-send-mutated.py"
 sed 's/^        consume_approval(args.approval, rec, reference)$/        pass/' "$SCRIPT" > "$MUT"
