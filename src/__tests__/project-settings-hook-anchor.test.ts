@@ -72,6 +72,7 @@ const EXPECTED: Record<string, string[]> = {
   // KAPUEGYUT918: a failed Bash call can still have written a memory file.
   PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py @ Bash'],
   PreToolUse: [
+    'fleet-freeze-gate.sh @ *', // KILLSWITCH1022: every tool call denied while the fleet is frozen
     'outgoing-copy-gate.py @ Bash',
     'outgoing-copy-gate.py @ .*send_email.*',
     'outgoing-copy-gate.py @ .*manage_email.*',

@@ -221,17 +221,17 @@ describe('the tool-call hook', () => {
   const REPO = join(__dirname, '..', '..')
   function hookCommandFrom(settingsText: string): string {
     const pre = (JSON.parse(settingsText).hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>)
-    const e = pre.find((x) => x.hooks.some((h) => h.command.includes('store/fleet-freeze.json')))
+    const e = pre.find((x) => x.hooks.some((h) => h.command.includes('fleet-freeze-gate.sh')))
     expect(e?.matcher).toBe('*')
     return e!.hooks[0]!.command
   }
+  // The real script, pointed at this test's freeze file.
   function run(command: string, env: Record<string, string> = {}) {
-    return spawnSync('bash', ['-c', command], { encoding: 'utf-8', env: { ...process.env, ...env } })
+    return spawnSync('bash', ['-c', command], { encoding: 'utf-8', env: { ...process.env, FLEET_FREEZE_FILE: FLEET_FREEZE_PATH, ...env } })
   }
 
   it('the sub-agent template denies every tool (exit 2) while the file exists, and nothing otherwise', () => {
-    const tpl = readFileSync(join(REPO, 'templates', 'settings.json.template'), 'utf-8').split('{{PROJECT_ROOT}}').join(ROOT)
-    const cmd = hookCommandFrom(tpl)
+    const cmd = hookCommandFrom(readFileSync(join(REPO, 'templates', 'settings.json.template'), 'utf-8').split('{{PROJECT_ROOT}}').join(REPO))
     rmSync(FLEET_FREEZE_PATH, { force: true })
     expect(run(cmd).status).toBe(0)
     writeFileSync(FLEET_FREEZE_PATH, '{}')
@@ -240,12 +240,17 @@ describe('the tool-call hook', () => {
     expect(r.stderr).toMatch(/FLOTTA FAGYASZTVA/)
   })
 
-  it('the main agent (project settings) gets the same gate on its own project dir', () => {
+  it('the main agent (project settings) runs the same gate from its project dir', () => {
     const cmd = hookCommandFrom(readFileSync(join(REPO, '.claude', 'settings.json'), 'utf-8'))
     rmSync(FLEET_FREEZE_PATH, { force: true })
-    expect(run(cmd, { CLAUDE_PROJECT_DIR: ROOT }).status).toBe(0)
+    expect(run(cmd, { CLAUDE_PROJECT_DIR: REPO }).status).toBe(0)
     writeFileSync(FLEET_FREEZE_PATH, '{}')
-    expect(run(cmd, { CLAUDE_PROJECT_DIR: ROOT }).status).toBe(2)
+    expect(run(cmd, { CLAUDE_PROJECT_DIR: REPO }).status).toBe(2)
     expect(existsSync(FLEET_FREEZE_PATH)).toBe(true)
+  })
+
+  it('without the override the gate watches <install>/store/fleet-freeze.json', () => {
+    const script = readFileSync(join(REPO, 'scripts', 'hooks', 'fleet-freeze-gate.sh'), 'utf-8')
+    expect(script).toContain('FREEZE="${FLEET_FREEZE_FILE:-$ROOT/store/fleet-freeze.json}"')
   })
 })

@@ -195,7 +195,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -e {{PROJECT_ROOT}}/store/fleet-freeze.json ] && { echo \"FLOTTA FAGYASZTVA (piros gomb, KILLSWITCH1022): most egyetlen eszkozt sem futtathatsz. Ne probalkozz megkerulni: varj, a gazda a dashboardon oldja fel.\" >&2; exit 2; }; exit 0'",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/fleet-freeze-gate.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/fleet-freeze-gate.sh; exit 0'",
             "timeout": 5
           }
         ]
