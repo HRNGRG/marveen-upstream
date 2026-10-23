@@ -16166,6 +16166,8 @@ const CLAUDE_PLAN_LOGIN_ERROR_KEYS = {
   'bad-code': 'settings.claude_plans.login.error_bad_code',
   'wrong-phase': 'settings.claude_plans.login.error_expired',
   'verify-failed': 'settings.claude_plans.login.error_rejected',
+  // Every route here takes the owner (mayIssueCredentials): a token or Bridge device-key window gets this.
+  'owner_session_required': 'settings.claude_plans.login.error_owner_session',
 }
 
 function claudePlanLoginErrorText(data) {

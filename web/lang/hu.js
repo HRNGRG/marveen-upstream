@@ -1237,6 +1237,7 @@ window._i18n.hu = {
   'settings.claude_plans.login.error_no_token': 'A kód után nem jött token. Ellenőrizd a kódot, és kérj új linket.',
   'settings.claude_plans.login.error_bad_code': 'Ez nem úgy néz ki, mint a bejelentkezési oldal kódja. Másold be újra, egészben.',
   'settings.claude_plans.login.error_rejected': 'Az új tokent a próbahívás elutasította, ezért nem mentettük el.',
+  'settings.claude_plans.login.error_owner_session': 'Ehhez a gazda dashboard-belépése kell: jelentkezz be a dashboard felhasználóneveddel és jelszavaddal. Ha ez az ablak tokennel vagy a Bridge eszközkulcsával van belépve: Beállítások, Dashboard belépés kártya, Belépés a dashboard-jelszóval gomb, utána próbáld újra.',
   'settings.claude_plans.readiness.no_active_plan': 'A rotációnak nincs rögzített aktív planje a fő agentre, ezért a heartbeat nem tudja, melyik keretet figyelje. Javítás: egyszer kézzel válts arra a planre, amelyiken a fő agent most fut (lent: "Váltás erre a planre"). Ez a fő agent újraindításával jár.',
   'settings.claude_plans.switch_btn': 'Váltás erre a planre',
   'settings.claude_plans.confirm_switch': 'Átváltod a fő agentet erre: "{label}"? Ez újraindítja a fő agent session-jét.',
