@@ -39,6 +39,7 @@ import {
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
+import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors } from './channels-supervisor.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
 import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
@@ -1590,6 +1591,14 @@ export function createMainChannelsSession(): MainSessionCreateResult {
     logger.error({ script: CHANNELS_SCRIPT }, 'Cannot recreate main channels session: channels.sh missing')
     return 'script-missing'
   }
+  // CHANNELSDUP1023: a supervisor that is already running owns this session -- it is between
+  // a kill-session and its rebuild, or in its own restart back-off. Starting a second one made
+  // two supervisors watch one session (measured 2026-10-22 13:10, channels-supervisor.ts).
+  const live = runningChannelsSupervisors(CHANNELS_SCRIPT)
+  if (live.length > 0) {
+    logger.warn({ session: MAIN_CHANNELS_SESSION, supervisors: live }, 'Main channels session absent, but a channels.sh supervisor is already running -- not starting a second one')
+    return 'grace'
+  }
   try {
     // Detached + unref'd: channels.sh is a long-lived supervisor (it tails the
     // session in a wait loop), so it must outlive this check() tick without
@@ -1785,6 +1794,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   // accepts a non-existent plist with exit 0, leaving the session untouched.
   if (process.platform !== 'linux' && existsSync(MAIN_CHANNELS_PLIST)) {
     const pidBefore = mainPaneClaudePid()
+    const reloadAt = Date.now()
     try {
       execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
       execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
@@ -1808,6 +1818,20 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
       writeRespawnStamp() // coordinate with the systemd-timer watchdog
       noteOwnHardRestartStamp(marveenLastHardRestart)
       return { ok: true }
+    }
+    // CHANNELSDUP1023: an unreadable pane after the reload is, by itself, no proof either way.
+    // A channels.sh that launchd started for THIS reload is: it is rebuilding the session
+    // (kill-session, then a cold start that outlasts the poll), so the reload took effect and
+    // falling through would launch a second supervisor on top of it.
+    if (pidBefore !== null && pidAfter === null) {
+      const fresh = freshSupervisor(runningChannelsSupervisors(CHANNELS_SCRIPT), reloadWindowSec(reloadAt, Date.now()))
+      if (launchdReloadVerdict(pidBefore, pidAfter, fresh?.pid ?? null) === 'rebuilding') {
+        logger.warn({ pidBefore, supervisor: fresh }, `Hard restart: launchctl reload of com.${SERVICE_ID}.channels -- a fresh channels.sh is rebuilding the session (the pane is not readable yet)`)
+        marveenLastHardRestart = Date.now()
+        writeRespawnStamp() // coordinate with the systemd-timer watchdog
+        noteOwnHardRestartStamp(marveenLastHardRestart)
+        return { ok: true }
+      }
     }
     logger.warn(
       { pidBefore, pidAfter, plist: MAIN_CHANNELS_PLIST },
