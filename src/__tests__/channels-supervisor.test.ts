@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { etimeSeconds, freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors, supervisorsFromPs } from '../web/channels-supervisor.js'
+import { SUPERVISOR_STUCK_MS, SUPERVISOR_WAIT_GAP_MS, etimeSeconds, freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors, supervisorWaitDecision, supervisorsFromPs } from '../web/channels-supervisor.js'
 
 // CHANNELSDUP1023 (measured 2026-10-22 13:10): the hard restart read an unreadable pane after
 // the launchd reload as "no effect" and launched a second channels.sh next to the one launchd
@@ -79,6 +79,45 @@ describe('reloadWindowSec', () => {
   })
 })
 
+
+describe('runningChannelsSupervisors when ps cannot run (Dani, #2203 review)', () => {
+  it('answers an empty list, so a ps failure never blocks a recreate', () => {
+    expect(runningChannelsSupervisors('/opt/inst/scripts/channels.sh', '/nonexistent/bin/ps')).toEqual([])
+  })
+})
+
+describe('supervisorWaitDecision (#2203 follow-up: a supervisor is waited on, but not forever)', () => {
+  const t0 = 1_000_000
+  it('no supervisor: start one, and the wait is cleared', () => {
+    expect(supervisorWaitDecision({ since: t0, lastSeen: t0 }, t0 + 1000, 0)).toEqual({ verdict: 'start', state: null })
+  })
+  it('a running supervisor is waited on while the session stays absent for less than the limit', () => {
+    const first = supervisorWaitDecision(null, t0, 1)
+    expect(first).toEqual({ verdict: 'wait', state: { since: t0, lastSeen: t0 } })
+    const second = supervisorWaitDecision(first.state, t0 + 60_000, 1)
+    expect(second.verdict).toBe('wait')
+  })
+  it('past the limit, one minute apart, it reads as stuck', () => {
+    let st = supervisorWaitDecision(null, t0, 1).state
+    for (let m = 1; m * 60_000 <= SUPERVISOR_STUCK_MS; m++) {
+      const d = supervisorWaitDecision(st, t0 + m * 60_000, 1)
+      expect(d.verdict).toBe('wait')
+      st = d.state
+    }
+    expect(supervisorWaitDecision(st, t0 + SUPERVISOR_STUCK_MS + 1000, 1).verdict).toBe('stuck')
+  })
+  it('the limit is the recreate path\'s own cold-start grace (Marveen 42304)', () => {
+    const monitor = readFileSync(join(__dirname, '../web/channel-monitor.ts'), 'utf-8')
+    const grace = Number(/const MAIN_SESSION_CREATE_GRACE_MS = ([\d_]+)/.exec(monitor)?.[1].replace(/_/g, ''))
+    expect(SUPERVISOR_STUCK_MS).toBe(grace)
+  })
+  it('a gap longer than the poll means the earlier wait ended: a new one starts from zero', () => {
+    const old = { since: t0, lastSeen: t0 + 60_000 }
+    const later = t0 + 60_000 + SUPERVISOR_WAIT_GAP_MS + 1
+    expect(supervisorWaitDecision(old, later, 1)).toEqual({ verdict: 'wait', state: { since: later, lastSeen: later } })
+  })
+})
+
 describe('runningChannelsSupervisors on a real process', () => {
   const dir = mkdtempSync(join(tmpdir(), 'chansup-'))
   const script = join(dir, 'channels.sh')
@@ -117,7 +156,34 @@ describe('the two call sites in channel-monitor.ts', () => {
     const spawnAt = body.indexOf('spawn(')
     expect(check).toBeGreaterThan(0)
     expect(check).toBeLessThan(spawnAt)
-    expect(body.slice(check, spawnAt)).toMatch(/if \(live\.length > 0\) \{[\s\S]*?return 'grace'/)
+    expect(body.slice(check, spawnAt)).toMatch(/supervisorWaitDecision\(supervisorWait, now, live\.length\)/)
+  })
+
+  it('createMainChannelsSession tells the owner about a stuck supervisor and still starts no second one', () => {
+    const body = fn('createMainChannelsSession')
+    const decide = body.indexOf('supervisorWaitDecision(supervisorWait, now, live.length)')
+    const spawnAt = body.indexOf('spawn(')
+    expect(decide).toBeGreaterThan(0)
+    expect(decide).toBeLessThan(spawnAt)
+    // The wait is kept across ticks; without it every tick starts from zero and nothing is ever stuck.
+    expect(body.slice(decide, decide + 120)).toMatch(/\n\s*supervisorWait = wait\.state\n/)
+    // Each branch is cut out up to its OWN closing brace (Dani's #2204 review: lazy regexes let
+    // a guarded alert and a stuck branch without its return pass on the wait branch's text).
+    const block = (head: string) => {
+      const a = body.indexOf(head)
+      expect(a, head).toBeGreaterThan(decide)
+      const b = body.indexOf('\n  }\n', a)
+      expect(b).toBeLessThan(spawnAt)
+      return body.slice(a + head.length, b).split('\n').map((l) => l.trim()).filter(Boolean)
+    }
+    const stuck = block("if (wait.verdict === 'stuck') {")
+    expect(stuck[0]).toMatch(/^logger\.error\(/)
+    expect(stuck[1]).toMatch(/^sendRoutineAlert\('main-session-supervisor-stuck', /)
+    expect(stuck[stuck.length - 1]).toBe("return 'grace'")
+    expect(stuck).toHaveLength(3)
+    const waitLines = block("if (wait.verdict === 'wait') {")
+    expect(waitLines[waitLines.length - 1]).toBe("return 'grace'")
+    expect(waitLines).toHaveLength(2)
   })
 
   it('hardRestartMarveenChannels takes a fresh supervisor as the effect when the pane is unreadable, before the fall-through', () => {

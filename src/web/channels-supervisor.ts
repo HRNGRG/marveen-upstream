@@ -48,9 +48,9 @@ export function supervisorsFromPs(psOut: string, script: string): ChannelsSuperv
 }
 
 /** The running supervisors of `script`; an empty list when ps cannot be read (fail-open: the caller may start one). */
-export function runningChannelsSupervisors(script: string): ChannelsSupervisor[] {
+export function runningChannelsSupervisors(script: string, psBin = '/bin/ps'): ChannelsSupervisor[] {
   try {
-    const psOut = execFileSync('/bin/ps', ['-axo', 'pid=,etime=,args='], { encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] })
+    const psOut = execFileSync(psBin, ['-axo', 'pid=,etime=,args='], { encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] })
     return supervisorsFromPs(psOut, script)
   } catch {
     return []
@@ -78,4 +78,29 @@ export function launchdReloadVerdict(pidBefore: number | null, pidAfter: number 
 /** The window a supervisor must fall in to belong to a reload begun at `reloadAt` (ms): the time since, rounded up, plus a second of slack. */
 export function reloadWindowSec(reloadAt: number, now: number): number {
   return Math.ceil((now - reloadAt) / 1000) + 1
+}
+
+// CHANNELSDUP1023 follow-up (Dani's review of #2203): while a supervisor runs, the recreate
+// path waits for it -- but not forever. A supervisor's own wait loop ends within a tick (5 s)
+// once its session is gone, so a session that STAYS absent next to a running supervisor for
+// longer than this means the supervisor is stuck before it created the session. Then the owner
+// is told; a second supervisor is still not started (that was the original bug). The limit is
+// the recreate path's own cold-start grace (MAIN_SESSION_CREATE_GRACE_MS in channel-monitor.ts,
+// Marveen 42304): a supervisor gets exactly as long as a recreate the dashboard started itself.
+export const SUPERVISOR_STUCK_MS = 360_000
+// The monitor calls the recreate path once a minute while the session is absent. A longer gap
+// means the earlier wait ended (the session came back), so a new wait starts from zero.
+export const SUPERVISOR_WAIT_GAP_MS = 150_000
+
+export interface SupervisorWait { since: number; lastSeen: number }
+
+/**
+ * Pure: one recreate attempt while `liveCount` supervisors run. 'start': none runs, spawn one.
+ * 'wait': one runs and has had less than SUPERVISOR_STUCK_MS. 'stuck': it has had longer.
+ * The returned state is the caller's to keep (null once no supervisor runs).
+ */
+export function supervisorWaitDecision(prev: SupervisorWait | null, now: number, liveCount: number): { verdict: 'start' | 'wait' | 'stuck'; state: SupervisorWait | null } {
+  if (liveCount === 0) return { verdict: 'start', state: null }
+  const since = prev && now - prev.lastSeen <= SUPERVISOR_WAIT_GAP_MS ? prev.since : now
+  return { verdict: now - since > SUPERVISOR_STUCK_MS ? 'stuck' : 'wait', state: { since, lastSeen: now } }
 }

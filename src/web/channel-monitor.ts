@@ -39,7 +39,8 @@ import {
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
-import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors } from './channels-supervisor.js'
+import { paneRunsClaude, scheduleHardRestartVerify } from './hard-restart-verify.js'
+import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors, supervisorWaitDecision, type SupervisorWait } from './channels-supervisor.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
 import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
@@ -1561,6 +1562,8 @@ const CHANNELS_SCRIPT = join(PROJECT_ROOT, 'scripts', 'channels.sh')
 // recreated on the next 60s poll.
 const MAIN_SESSION_CREATE_GRACE_MS = 360_000
 let marveenLastSessionCreate = 0
+// CHANNELSDUP1023 follow-up: how long the recreate path has been waiting on a running supervisor.
+let supervisorWait: SupervisorWait | null = null
 
 export function mainChannelsSessionExists(): boolean {
   try {
@@ -1595,7 +1598,14 @@ export function createMainChannelsSession(): MainSessionCreateResult {
   // a kill-session and its rebuild, or in its own restart back-off. Starting a second one made
   // two supervisors watch one session (measured 2026-10-22 13:10, channels-supervisor.ts).
   const live = runningChannelsSupervisors(CHANNELS_SCRIPT)
-  if (live.length > 0) {
+  const wait = supervisorWaitDecision(supervisorWait, now, live.length)
+  supervisorWait = wait.state
+  if (wait.verdict === 'stuck') {
+    logger.error({ session: MAIN_CHANNELS_SESSION, supervisors: live, absentSinceMs: now - wait.state!.since }, 'Main channels session still absent next to a running channels.sh supervisor -- the supervisor looks stuck; not starting a second one')
+    sendRoutineAlert('main-session-supervisor-stuck', `⚠️ A ${MAIN_CHANNELS_SESSION} session ${Math.round((now - wait.state!.since) / 60_000)} perce hiányzik, pedig fut channels.sh supervisor (pid ${live.map((s) => s.pid).join(', ')}): valószínűleg beragadt. Másodikat nem indítok mellé; kézi ellenőrzés kell.`)
+    return 'grace'
+  }
+  if (wait.verdict === 'wait') {
     logger.warn({ session: MAIN_CHANNELS_SESSION, supervisors: live }, 'Main channels session absent, but a channels.sh supervisor is already running -- not starting a second one')
     return 'grace'
   }
@@ -1781,6 +1791,29 @@ function mainPaneClaudePid(): number | null {
   }
 }
 
+// CHANNELSDUP1023 follow-up (b): tmux's `#{pane_dead}` for the main pane, or null when unreadable.
+function mainPaneDead(): boolean | null {
+  try {
+    const out = execFileSync(tmuxBin(), ['list-panes', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), '-F', '#{pane_dead}'],
+      { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().split('\n')[0]
+    return out === '1' ? true : out === '0' ? false : null
+  } catch {
+    return null
+  }
+}
+
+// A successful hard restart is measured once more, a few minutes later: a fresh supervisor that
+// could not bring claude up would otherwise go unnoticed (the reload already counted as done).
+function verifyHardRestartLater(): void {
+  scheduleHardRestartVerify(
+    () => paneRunsClaude(mainPaneDead(), getClaudePidForSession(MAIN_CHANNELS_SESSION)),
+    () => {
+      logger.error({ session: MAIN_CHANNELS_SESSION }, 'Hard restart reported success, but claude is not running in the main pane some minutes later')
+      sendRoutineAlert('main-hard-restart-no-claude', `⚠️ A ${MAIN_CHANNELS_SESSION} újraindítása után néhány perccel sem fut claude a fő pane-ben. A csatorna valószínűleg nem jött vissza; kézi ellenőrzés kell.`)
+    },
+  )
+}
+
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   // FABLEFALL1: the restarted session boots from the main/worker shared config
   // roots, which the per-agent spawn-time stamp never covers -- stamp them now
@@ -1817,6 +1850,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
       marveenLastHardRestart = Date.now()
       writeRespawnStamp() // coordinate with the systemd-timer watchdog
       noteOwnHardRestartStamp(marveenLastHardRestart)
+      verifyHardRestartLater()
       return { ok: true }
     }
     // CHANNELSDUP1023: an unreadable pane after the reload is, by itself, no proof either way.
@@ -1830,6 +1864,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
         marveenLastHardRestart = Date.now()
         writeRespawnStamp() // coordinate with the systemd-timer watchdog
         noteOwnHardRestartStamp(marveenLastHardRestart)
+        verifyHardRestartLater()
         return { ok: true }
       }
     }
@@ -1855,6 +1890,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   if (respawnMarveenSessionFresh()) {
     marveenLastHardRestart = Date.now()
     noteOwnHardRestartStamp(marveenLastHardRestart) // respawnMarveenSessionFresh wrote the stamp
+    verifyHardRestartLater()
     return { ok: true }
   }
   return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
