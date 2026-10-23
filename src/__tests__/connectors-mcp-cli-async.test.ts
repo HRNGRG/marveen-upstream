@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import { Readable } from 'node:stream'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'connectors-mcp-cli-'))
+// The connector DELETE also rewrites ~/.claude.json: point HOME at a scratch
+// dir so no test can read or rewrite the real one of whoever runs the suite.
+const tmpHome = mkdtempSync(join(tmpdir(), 'connectors-mcp-home-'))
+const origHome = process.env.HOME
+process.env.HOME = tmpHome
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -40,6 +45,8 @@ echo "start $n" >> "$d/events"
 cat > "$d/stdin.$n"
 if [ -f "$d/sleep" ]; then sleep "$(cat "$d/sleep")"; fi
 if [ -f "$d/fail" ] && grep -qxF -- "$(cat "$d/fail")" "$d/argv.$n"; then echo "fake claude failure: $*" >&2; exit 1; fi
+# Like a real claude mcp add: it read the config when it started and writes it back now.
+if [ -f "$d/target" ]; then cat "$d/newcontent" > "$(cat "$d/target")"; fi
 echo "end $n" >> "$d/events"
 exit 0
 `)
@@ -51,6 +58,9 @@ const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 
 afterAll(() => {
   process.env.PATH = origPath
+  if (origHome === undefined) delete process.env.HOME
+  else process.env.HOME = origHome
+  rmSync(tmpHome, { recursive: true, force: true })
   delete process.env.FAKE_CLAUDE_DIR
   rmSync(binDir, { recursive: true, force: true })
   rmSync(tmpRoot, { recursive: true, force: true })
@@ -280,6 +290,64 @@ describe('claude mcp CLI is async and shell-free', () => {
       writeFileSync(file, '{}')
     }
   })
+
+  it('the tests run against a scratch home, never the real ~/.claude.json', () => {
+    expect(homedir()).toBe(tmpHome)
+  })
+
+  it('a DELETE waiting for a claude mcp add keeps the CLI write and its own removal', async () => {
+    const file = join(tmpRoot, '.mcp.json')
+    writeFileSync(file, JSON.stringify({ mcpServers: { 'del-lost-1': { command: 'x' } } }))
+    // The child read the file before the DELETE arrived and writes it back, plus its own server, when it ends.
+    writeFileSync(join(dir, 'newcontent'), JSON.stringify({ mcpServers: { 'del-lost-1': { command: 'x' }, 'busy-proj': { url: 'u' } } }))
+    writeFileSync(join(dir, 'target'), file)
+    setSleep('1')
+    const add = call('POST', '/api/connectors', { name: 'busy-proj', type: 'http', url: 'https://example.test/p', scope: 'project' })
+    await vi.waitFor(() => expect(events()).toContain('start 1'), { timeout: 5000 })
+    const del = call('DELETE', '/api/connectors/del-lost-1')
+    const [a, d] = await Promise.all([add, del])
+    expect(a.status).toBe(200)
+    expect(d.json).toEqual({ ok: true, removed: 1 })
+    const after = JSON.parse(readFileSync(file, 'utf-8'))
+    expect(Object.keys(after.mcpServers)).toEqual(['busy-proj'])
+    writeFileSync(file, '{}')
+  })
+
+  it('a connector DELETE keeps each config file\'s mode (~/.claude.json stays 0600)', async () => {
+    const user = join(tmpHome, '.claude.json')
+    const project = join(tmpRoot, '.mcp.json')
+    writeFileSync(user, JSON.stringify({ mcpServers: { 'del-mode-1': { command: 'x' } }, other: 1 }))
+    chmodSync(user, 0o600)
+    writeFileSync(project, JSON.stringify({ mcpServers: { 'del-mode-1': { command: 'x' } } }))
+    chmodSync(project, 0o644)
+    try {
+      setSleep('0')
+      const d = await call('DELETE', '/api/connectors/del-mode-1')
+      expect(d.json).toEqual({ ok: true, removed: 2 })
+      expect(statSync(user).mode & 0o777).toBe(0o600)
+      expect(statSync(project).mode & 0o777).toBe(0o644)
+      expect(JSON.parse(readFileSync(user, 'utf-8'))).toEqual({ mcpServers: {}, other: 1 })
+    } finally {
+      rmSync(user, { force: true })
+      writeFileSync(project, '{}')
+    }
+  })
+
+  for (const inherited of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+    it(`a connector DELETE for the inherited name "${inherited}" finds nothing and rewrites nothing`, async () => {
+      const project = join(tmpRoot, '.mcp.json')
+      const before = JSON.stringify({ mcpServers: { keep: { command: 'x' } } })
+      writeFileSync(project, before)
+      try {
+        setSleep('0')
+        const d = await call('DELETE', '/api/connectors/' + encodeURIComponent(inherited))
+        expect(d.status).toBe(404)
+        expect(readFileSync(project, 'utf-8')).toBe(before)
+      } finally {
+        writeFileSync(project, '{}')
+      }
+    })
+  }
 
   it('a non-string value (url: {}) answers 500 and runs no CLI, as the shell form did', async () => {
     setSleep('0')

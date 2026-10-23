@@ -542,9 +542,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       for (const mcpPath of mcpFiles) {
         try {
           const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
-          if (parsed.mcpServers && parsed.mcpServers[name]) {
-            delete parsed.mcpServers[name]
-            atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2))
+          // Own keys only: "toString" or "__proto__" is truthy on every object,
+          // so a plain lookup counted a removal and rewrote the file for nothing.
+          const servers = parsed.mcpServers
+          if (servers && typeof servers === 'object' && Object.hasOwn(servers, name)) {
+            delete servers[name]
+            // Keep the file's own mode: ~/.claude.json is 0600, and a mode-less
+            // write renames a umask-default (0644) file over it (VAULTMODE818).
+            atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2), { mode: statSync(mcpPath).mode & 0o777 })
             count++
           }
         } catch { /* skip unreadable files */ }
