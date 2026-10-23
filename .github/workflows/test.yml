@@ -85,6 +85,7 @@ jobs:
       # above because the briefing script takes its binary from CLAUDE_BIN.
       - run: bash scripts/__tests__/keepalive-probe-install.test.sh
       - run: bash scripts/__tests__/morning-stamp-gate.test.sh
+      - run: bash scripts/__tests__/morning-briefing-api-key-only.test.sh
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
