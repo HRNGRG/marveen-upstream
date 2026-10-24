@@ -2826,9 +2826,18 @@ function buildFleetRosterBody(selfName: string): string {
   const selfReportsTo = selfTeam.reportsTo && selfTeam.reportsTo !== selfName && names.includes(selfTeam.reportsTo)
     ? selfTeam.reportsTo
     : null
+  // #2225: a leader's team is often set as ITS OWN delegatesTo ("Kiknek delegálhat"
+  // in the dashboard), not as each member's reportsTo, so the reportsTo-only
+  // subordinate list above stayed empty and the leader never learned whom to hand
+  // work to. The raw values are only looked up, never printed: a name reaches the
+  // block only as the loop's agentName below, which comes from `names` and skips
+  // this agent, so a typo, a deleted agent, this agent's own name or a
+  // newline-laden string never does.
+  const selfDelegates = new Set(selfTeam.delegatesTo)
 
   const lines: string[] = []
   const subordinates: string[] = []
+  const delegates: string[] = []
   for (const agentName of names) {
     if (agentName === selfName) continue
 
@@ -2857,7 +2866,10 @@ function buildFleetRosterBody(selfName: string): string {
       roleTag = ' (beosztottad)'
     } else if (agentName === selfReportsTo) {
       roleTag = ' (vezetőd)'
+    } else if (selfDelegates.has(agentName)) {
+      roleTag = ' (delegálhatsz neki)'
     }
+    if (selfDelegates.has(agentName)) delegates.push(agentName)
 
     lines.push(`- **${agentName}** (agent_id: ${agentName})${roleTag}: ${capsStr}`)
   }
@@ -2876,6 +2888,9 @@ function buildFleetRosterBody(selfName: string): string {
   }
   if (subordinates.length > 0) {
     hierarchyLines.push(`Beosztottjaid: ${subordinates.map((n) => `**${n}**`).join(', ')}.`)
+  }
+  if (delegates.length > 0) {
+    hierarchyLines.push(`Kiknek delegálhatsz: ${delegates.map((n) => `**${n}**`).join(', ')}.`)
   }
 
   return [
