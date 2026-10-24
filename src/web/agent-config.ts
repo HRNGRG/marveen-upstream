@@ -670,7 +670,12 @@ export const HIDDEN_AGENT_SENTINEL = '.hidden-from-dashboard'
  */
 export function listAllAgentNames(): string[] {
   if (!existsSync(AGENTS_BASE_DIR)) return []
+  // The main agent has no agents/<id> directory: it runs in the channels
+  // session. A directory of that name (old drafts left in agents/marveen) is
+  // not a sub-agent, and listing it gave the team graph a second, stopped
+  // 'marveen' node that replaced the main one (MAINGHOST1024).
   return readdirSync(AGENTS_BASE_DIR).filter((f) => {
+    if (f === MAIN_AGENT_ID) return false
     try { return statSync(join(AGENTS_BASE_DIR, f)).isDirectory() } catch { return false }
   })
 }
