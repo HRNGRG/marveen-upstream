@@ -404,6 +404,14 @@ These templates are populated during agent scaffolding and placed into `agents/<
 
 Profile is set via the `profileId` field in `agent-config.json` and configurable from the dashboard "Agents" view.
 
+Under a strict profile Claude Code runs in `dontAsk` mode, where a command substitution
+(`$(cat <token>)`) never matches the allow-list, so such an agent cannot run the token `curl`
+recipes (#2232). It reaches the dashboard API through `scripts/marveen-api.sh` instead, which
+reads the token itself and takes every text from a file (`bash scripts/marveen-api.sh --help`
+lists the verbs). The helper and `scripts/agent-msg.sh` are on the `developer-junior.json`
+allow-list, and the generated CLAUDE.md blocks give a strict agent this recipe; every other
+agent keeps the `curl` recipe unchanged.
+
 ---
 
 ## Memory: daily-log mirror and date filter
