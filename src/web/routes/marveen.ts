@@ -61,6 +61,12 @@ export function buildMarveenIdentityCore(
   }
 }
 
+// CORPAVATAR1024 (owner decision 2026-10-18): the bot's and the owner's portraits stay
+// public (auth-gate exempts these two GETs), but no other website may embed them. The
+// dashboard and the Bridge webview load them by a relative URL, from the dashboard's own
+// origin, which same-origin allows; another site's <img> is refused by the browser.
+const AVATAR_CORP = 'same-origin'
+
 export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -179,6 +185,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
   }
 
   if (path === '/api/marveen/avatar' && method === 'GET') {
+    res.setHeader('Cross-Origin-Resource-Policy', AVATAR_CORP)
     // Avatars are ~1MB each and rarely change: let browsers reuse them for an
     // hour without a round-trip (an avatar swapped in another session shows up
     // after at most 1h, then ETag revalidation; the swapping session itself
@@ -201,6 +208,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
   // frontend falls back to that initial on a 404. no-cache (revalidate) rather
   // than a max-age, because nothing busts the URL when the file is replaced.
   if (path === '/api/marveen/owner-avatar' && method === 'GET') {
+    res.setHeader('Cross-Origin-Resource-Policy', AVATAR_CORP)
     for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
       const p = join(PROJECT_ROOT, 'store', `owner-avatar${ext}`)
       if (existsSync(p)) { serveFile(req, res, p); return true }
