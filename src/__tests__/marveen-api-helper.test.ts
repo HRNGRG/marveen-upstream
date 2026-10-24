@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { createServer, type Server, type IncomingMessage } from 'node:http'
 import { execFile } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +16,7 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HELPER = join(REPO, 'scripts', 'marveen-api.sh')
 const dir = mkdtempSync(join(tmpdir(), 'marveen-api-helper-test-'))
 const TOKEN = 'test-token-0123456789'
-const tokenFile = join(dir, 'token')
+const tokenFile = join(dir, '.dashboard-token')
 writeFileSync(tokenFile, TOKEN + '\n', 'utf-8')
 
 interface Seen { method: string; url: string; headers: IncomingMessage['headers']; body: string }
@@ -175,7 +175,7 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
   })
 
   it('no token file exits 2 with a loud message and sends nothing', async () => {
-    const r = await run(['directive-verify', '1'], { MARVEEN_TOKEN_FILE: join(dir, 'missing-token') })
+    const r = await run(['directive-verify', '1'], { MARVEEN_TOKEN_FILE: join(dir, 'no-such-dir', '.dashboard-token') })
     expect(r.code).toBe(2)
     expect(r.stderr).toMatch(/no readable token file/)
     expect(seen).toHaveLength(0)
@@ -199,6 +199,58 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     const r = await run(['directive-verify', '1'], { MARVEEN_API_BASE: 'http://127.0.0.1:9' })
     expect(r.code).toBe(3)
     expect(r.stderr).toContain('could not be reached')
+  })
+
+  it('an id carrying a path (../, %2f, /) exits 2 and sends nothing', async () => {
+    for (const args of [
+      ['directive-verify', '../1'],
+      ['directive-verify', '1/../2'],
+      ['memory-move', '..%2f1', 'cold', 'dani'],
+      ['memory-update', '7/..', 'dani', file('p.txt', 'x')],
+      ['message-close', '5/../../api/x'],
+      ['approval-status', '../approvals'],
+      ['approval-consume', 'ab12/..', 'memory_maintenance', 'dani'],
+    ]) {
+      const r = await run(args)
+      expect(r.code, args.join(' ')).toBe(2)
+    }
+    expect(seen).toHaveLength(0)
+  })
+
+  it('a MARVEEN_API_BASE off loopback exits 2 and sends nothing, for the message verb too', async () => {
+    const env = { MARVEEN_API_BASE: `http://example.invalid:${port(api)}` }
+    const r1 = await run(['directive-verify', '1'], env)
+    expect(r1.code).toBe(2)
+    expect(r1.stderr).toContain('neither loopback')
+    const r2 = await run(['message', 'dani', 'samu', file('m2.txt', 'x')], env)
+    expect(r2.code).toBe(2)
+    expect(seen).toHaveLength(0)
+  })
+
+  it('a MARVEEN_TOKEN_FILE that is not a .dashboard-token exits 2 and sends nothing', async () => {
+    const other = file('notes.txt', 'first line of some other file\n')
+    const r = await run(['directive-verify', '1'], { MARVEEN_TOKEN_FILE: other })
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('.dashboard-token')
+    expect((await run(['message', 'dani', 'samu', file('m3.txt', 'x')], { MARVEEN_TOKEN_FILE: other })).code).toBe(2)
+    expect(seen).toHaveLength(0)
+  })
+
+  it("a remote base is accepted when it is exactly the install's own AGENT_API_ORIGIN or DASHBOARD_PUBLIC_URL", async () => {
+    // The guard reads the install's .env next to scripts/, so the helper runs from a copied root.
+    const root = mkdtempSync(join(tmpdir(), 'marveen-api-root-'))
+    mkdirSync(join(root, 'scripts', 'lib'), { recursive: true })
+    copyFileSync(join(REPO, 'scripts', 'lib', 'marveen_api.py'), join(root, 'scripts', 'lib', 'marveen_api.py'))
+    writeFileSync(join(root, '.env'), 'WEB_PORT=3420\nAGENT_API_ORIGIN="https://dash.example.com/"\nDASHBOARD_PUBLIC_URL=https://public.example.com\n')
+    const check = (base: string) => new Promise<number>((resolve) => {
+      execFile('python3', ['-I', join(root, 'scripts', 'lib', 'marveen_api.py'), '--check-env'],
+        { env: { PATH: process.env.PATH!, MARVEEN_API_BASE: base } }, (err) => resolve(err ? (err.code as number) : 0))
+    })
+    expect(await check('https://dash.example.com')).toBe(0)
+    expect(await check('https://public.example.com/')).toBe(0)
+    expect(await check('https://dash.example.com.evil.test')).toBe(2)
+    expect(await check('http://dash.example.com')).toBe(2)
+    expect(await check('http://[::1]:3420')).toBe(0)
   })
 
   it('the token is never in the argv the helper passes on', async () => {

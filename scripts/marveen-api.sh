@@ -18,6 +18,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ "${1:-}" = "message" ]; then
   shift
+  # agent-msg.sh reads MARVEEN_API_BASE and MARVEEN_TOKEN_FILE too: the same guard first.
+  python3 "$DIR/lib/marveen_api.py" --check-env || exit 2
   PRIORITY=()
   ARGS=()
   while [ "$#" -gt 0 ]; do

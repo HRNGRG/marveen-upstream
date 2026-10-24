@@ -68,20 +68,51 @@ def fail_usage(msg):
     raise UsageError(msg)
 
 
+LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
+TOKEN_FILE_NAME = '.dashboard-token'
+
+
+def env_file_values(*keys):
+    """The install's own .env values for these keys (an agent's environment cannot change them)."""
+    out = {}
+    try:
+        with open(os.path.join(BASE, '.env'), encoding='utf-8') as f:
+            for line in f:
+                k, sep, v = line.partition('=')
+                if sep and k.strip() in keys and k.strip() not in out:
+                    out[k.strip()] = v.strip().strip('"\'')
+    except OSError:
+        pass
+    return out
+
+
+def check_env():
+    """Refuses an environment that would send the token elsewhere; None when it is fine.
+
+    The token goes to MARVEEN_API_BASE and comes from MARVEEN_TOKEN_FILE, and both are plain
+    environment. A base is accepted only on loopback, or when it is exactly this install's own
+    AGENT_API_ORIGIN or DASHBOARD_PUBLIC_URL from its .env (a remote agent's route). The token file
+    must be a .dashboard-token, so the helper cannot send another file's first line as a header."""
+    base = os.environ.get('MARVEEN_API_BASE')
+    if base:
+        b = base.strip().rstrip('/')
+        u = urllib.parse.urlsplit(b)
+        on_loopback = u.scheme in ('http', 'https') and u.hostname in LOOPBACK_HOSTS
+        configured = {v.rstrip('/') for v in env_file_values('AGENT_API_ORIGIN', 'DASHBOARD_PUBLIC_URL').values() if v}
+        if not on_loopback and b not in configured:
+            return (f'MARVEEN_API_BASE={b} is neither loopback nor this install\'s AGENT_API_ORIGIN or '
+                    'DASHBOARD_PUBLIC_URL (.env); nothing was sent.')
+    token_file = os.environ.get('MARVEEN_TOKEN_FILE')
+    if token_file and os.path.basename(token_file) != TOKEN_FILE_NAME:
+        return f'MARVEEN_TOKEN_FILE must name a {TOKEN_FILE_NAME} file; nothing was sent.'
+    return None
+
+
 def api_base():
     base = os.environ.get('MARVEEN_API_BASE')
     if base:
-        return base.rstrip('/')
-    port = os.environ.get('MARVEEN_WEB_PORT') or os.environ.get('WEB_PORT')
-    if not port:
-        try:
-            with open(os.path.join(BASE, '.env'), encoding='utf-8') as f:
-                for line in f:
-                    if line.startswith('WEB_PORT='):
-                        port = line.split('=', 1)[1].strip().strip('"\'')
-                        break
-        except OSError:
-            pass
+        return base.strip().rstrip('/')
+    port = os.environ.get('MARVEEN_WEB_PORT') or os.environ.get('WEB_PORT') or env_file_values('WEB_PORT').get('WEB_PORT')
     return f'http://localhost:{port or 3420}'
 
 
@@ -259,6 +290,14 @@ def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
         return 0 if argv else 2
+    refused = check_env()
+    if refused:
+        print(f'FAIL: {refused}', file=sys.stderr)
+        return 2
+    if argv[0] == '--check-env':
+        # marveen-api.sh asks this before it hands the message verb to agent-msg.sh, which reads
+        # the same two variables.
+        return 0
     verb, rest = argv[0], argv[1:]
     try:
         method, path, body, headers, flags = build_request(verb, rest)
