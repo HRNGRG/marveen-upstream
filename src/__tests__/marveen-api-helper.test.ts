@@ -227,6 +227,21 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     expect(seen).toHaveLength(0)
   })
 
+  it('loopback means the exact host, not a name that starts with or contains one', async () => {
+    // Review of #2239: a prefix match (localhost.evil.test) kept every other test green.
+    const check = (base: string) => new Promise<number>((resolve) => {
+      execFile('python3', ['-I', join(REPO, 'scripts', 'lib', 'marveen_api.py'), '--check-env'],
+        { env: { PATH: process.env.PATH!, MARVEEN_API_BASE: base } }, (err) => resolve(err ? (err.code as number) : 0))
+    })
+    for (const near of ['http://localhost.evil.test:3420', 'http://127.0.0.1.nip.io:3420', 'http://localhostx:3420',
+      'http://evil.test/localhost', 'http://localhost@evil.test:3420']) {
+      expect(await check(near), near).toBe(2)
+    }
+    for (const exact of ['http://localhost:3420', 'http://127.0.0.1:1', 'http://[::1]:3420', 'https://LOCALHOST:3420']) {
+      expect(await check(exact), exact).toBe(0)
+    }
+  })
+
   it('a MARVEEN_TOKEN_FILE that is not a .dashboard-token exits 2 and sends nothing', async () => {
     const other = file('notes.txt', 'first line of some other file\n')
     const r = await run(['directive-verify', '1'], { MARVEEN_TOKEN_FILE: other })
