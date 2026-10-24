@@ -493,6 +493,8 @@ export const INSTALL_ANCHORED_SUFFIXES = [
   '/scripts/skill-index.sh',
   '/scripts/recipient-ledger.mjs',
   '/scripts/skill-lint.mjs',
+  // #2232: the strict-profile helper every strict agent's recipes name
+  '/scripts/marveen-api.sh',
 ] as const
 // An absolute path prefix: starts with a `/` that is not the tail of something
 // else (`~/x`, `{{X}}/x`, `a/x` are not absolute roots -- the lookbehind keeps
@@ -4317,7 +4319,7 @@ ${strict ? R.searchLabel : 'A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni
 relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
 relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá ${strict ? R.strictFlag : 'a &strict=1-et'}: ott az üres válasz pontosan azt jelenti, aminek látszik.
-Időszakra szűrés: ${strict ? R.dateFilter : '&date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva.'} A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
+${strict ? `Időszakra szűrés: ${R.dateFilter}` : 'Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva.'} A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 
