@@ -11,13 +11,15 @@ const PS = [
   `${String(POLLER_PID).padStart(5)}     1 /Users/u/.bun/bin/bun server.ts`,
 ].join('\n')
 let envScan = ''
+let etimes = ''
 
 vi.mock('node:child_process', async (orig) => {
   const real = await orig<typeof import('node:child_process')>()
   return {
     ...real,
     execFileSync: (cmd: string, args: string[], opts: unknown) =>
-      cmd === '/bin/ps' ? PS : (real.execFileSync as unknown as (c: string, a: string[], o: unknown) => string)(cmd, args, opts),
+      cmd === '/bin/ps' ? (args[1] === 'pid=,etime=' ? etimes : PS)
+        : (real.execFileSync as unknown as (c: string, a: string[], o: unknown) => string)(cmd, args, opts),
     execSync: (cmd: string, opts: unknown) =>
       cmd === '/bin/ps axeww' ? envScan : (real.execSync as unknown as (c: string, o: unknown) => string)(cmd, opts),
   }
@@ -32,12 +34,19 @@ const row = (chanDir: string) =>
   `${String(POLLER_PID).padStart(5)} ??  S 0:01.00 /Users/u/.bun/bin/bun server.ts TELEGRAM_STATE_DIR=${chanDir} CLAUDE_PLUGIN_ROOT=/Users/u/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6`
 
 describe('probeChannelPluginLiveness asks the state-dir env scan', () => {
-  it('the wrapper is gone, the poller carries this agent\'s state dir: alive', () => {
+  it('the wrapper is gone, the poller carries this agent\'s state dir and started after the claude: alive', () => {
     envScan = row(channelStateDir('telegram', agentDir(AGENT)))
+    etimes = `70994 10:00\n${POLLER_PID} 09:58`
     expect(probeChannelPluginLiveness(70994, 'telegram', AGENT)).toBe('alive')
+  })
+  it('...an orphan of an earlier session with the same state dir: down', () => {
+    envScan = row(channelStateDir('telegram', agentDir(AGENT)))
+    etimes = `70994 10:00\n${POLLER_PID} 1:10:00`
+    expect(probeChannelPluginLiveness(70994, 'telegram', AGENT)).toBe('down')
   })
   it('...and with no such row: down', () => {
     envScan = row('/elsewhere/.claude/channels/telegram')
+    etimes = `70994 10:00\n${POLLER_PID} 09:58`
     expect(probeChannelPluginLiveness(70994, 'telegram', AGENT)).toBe('down')
   })
 })

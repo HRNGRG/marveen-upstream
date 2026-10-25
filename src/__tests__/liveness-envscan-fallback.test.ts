@@ -9,7 +9,7 @@
 // reaper's own markers (stateDirPluginPollerPids).
 
 import { describe, it, expect } from 'vitest'
-import { decideHasPluginAlive } from '../channel-coordinator/liveness.js'
+import { decideHasPluginAlive, parseEtimeSeconds, pollersStartedSince } from '../channel-coordinator/liveness.js'
 import { stateDirPluginPollerPids } from '../web/channel-poller-reap.js'
 
 const CHAN_DIR = '/Users/u/projects/marveen/agents/argos/.claude/channels/telegram'
@@ -96,5 +96,49 @@ describe('the state-dir env scan finds a poller whose wrapper has exited', () =>
     })
     expect(alive).toBe(true)
     expect(asked).toBe(false)
+  })
+})
+
+// Samu's #2276 review: an orphan poller of an EARLIER session carries the same
+// state dir. Only a poller that started no earlier than this session's claude
+// is this session's: the plugin is spawned by it.
+describe('only a poller started since the claude counts', () => {
+  it('parses BSD/procps etime', () => {
+    expect(parseEtimeSeconds('05:12')).toBe(312)
+    expect(parseEtimeSeconds('1:02:03')).toBe(3723)
+    expect(parseEtimeSeconds('2-03:04:05')).toBe(2 * 86400 + 3 * 3600 + 4 * 60 + 5)
+    expect(parseEtimeSeconds(' 00:07 ')).toBe(7)
+    expect(parseEtimeSeconds('garbage')).toBeNull()
+  })
+
+  const PS = (rows: [number, string][]) => rows.map(([pid, e]) => `${String(pid).padStart(5)} ${e.padStart(11)}`).join('\n')
+
+  it("this session's reparented poller (started after the claude) counts", () => {
+    expect(pollersStartedSince(70994, [71046], PS([[70994, '10:00'], [71046, '09:58']]))).toEqual([71046])
+  })
+
+  it('an orphan of an earlier session (started before the claude) does not', () => {
+    expect(pollersStartedSince(70994, [61000], PS([[70994, '10:00'], [61000, '1:10:00']]))).toEqual([])
+  })
+
+  it('the same second counts as since; of two, only the newer one stays', () => {
+    expect(pollersStartedSince(70994, [61000, 71046], PS([[70994, '10:00'], [61000, '2-00:00:00'], [71046, '10:00']]))).toEqual([71046])
+  })
+
+  it('no row for the claude, or for a candidate: no evidence, nothing counts', () => {
+    expect(pollersStartedSince(70994, [71046], PS([[71046, '00:05']]))).toEqual([])
+    expect(pollersStartedSince(70994, [71046], PS([[70994, '10:00']]))).toEqual([])
+    expect(pollersStartedSince(70994, [71046], '')).toEqual([])
+  })
+
+  it('end to end on the decider: the orphan with this state dir is down, the newer poller alive', () => {
+    const orphan = envRow(61000, '/Users/u/.bun/bin/bun server.ts', { TELEGRAM_STATE_DIR: CHAN_DIR, CLAUDE_PLUGIN_ROOT: TG_ROOT })
+    const times = PS([[70994, '10:00'], [61000, '1:10:00'], [71046, '09:58']])
+    const run = (psEww: string) => decideHasPluginAlive({
+      psOutput: PS_WRAPPER_GONE, claudePid: 70994, providerType: 'telegram', botPid: 61000, isPidAlive: ALIVE,
+      stateDirPollerPids: () => pollersStartedSince(70994, stateDirPluginPollerPids('telegram', CHAN_DIR, psEww), times),
+    })
+    expect(run(orphan)).toBe(false)
+    expect(run(POLLER)).toBe(true)
   })
 })
