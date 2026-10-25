@@ -138,6 +138,39 @@ function hasIdleFooter(lines: string[]): boolean {
   return idleFooterIndex(lines) >= 0
 }
 
+/**
+ * IDLEFLUSHVETO812: background work an idle-LOOKING pane is still waiting on.
+ * The footer counts BashTool background shells (`N shell(s)`) and running
+ * Monitors (`N monitor(s)`); a background-agent block with a live clock is
+ * sub-agents at work. All three classify the pane as idle (they must, or the
+ * router would never deliver to it), and the transcript stays quiet while they
+ * run, so the idle-flush tier cannot tell such a session from a finished one.
+ * A flush restarts the session and kills that work. The counts are read ONLY
+ * on the live idle footer line (idleFooterIndex), never from scrollback.
+ * null = no recognised idle footer (nothing to say either way).
+ */
+export function detectBackgroundWork(pane: string | null): { shells: number; monitors: number; agents: number } | null {
+  if (!pane) return null
+  const bg = splitBackgroundAgentBlock(pane.split('\n'))
+  const lines = bg ? bg.above : pane.split('\n')
+  const agents = detectBackgroundAgents(pane)?.running ?? 0
+  const idx = idleFooterIndex(lines)
+  if (idx < 0) return null
+  const footer = stripAllAnsi(lines[idx])
+  const count = (rx: RegExp) => Number(rx.exec(footer)?.[1] ?? 0)
+  return {
+    shells: count(/(?:·|,) (\d+) shells?\b/),
+    monitors: count(/(?:·|,) (\d+) monitors?\b/),
+    agents,
+  }
+}
+
+/** True when the idle-looking pane still runs a background shell, a Monitor or a sub-agent. */
+export function hasBackgroundWork(pane: string | null): boolean {
+  const w = detectBackgroundWork(pane)
+  return w !== null && (w.shells > 0 || w.monitors > 0 || w.agents > 0)
+}
+
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.
 //

@@ -430,6 +430,10 @@ export interface GuardInputs {
    *  working -- deferring on `!paneIdle` would protect wedged panes from
    *  the restart that is their only way out. */
   paneBusy: boolean
+  /** The idle-looking pane still runs background work: a BashTool background
+   *  shell, a Monitor or a sub-agent (pane-state hasBackgroundWork). Vetoes the
+   *  idle-flush tier, whose restart would kill that work (IDLEFLUSHVETO812). */
+  paneBackgroundWork: boolean
   /** Session is ready to receive a prompt (post-restart readiness). */
   sessionReady: boolean
   /** Current HANDOFF.md mtime (ms), or null when the file does not exist. */
@@ -1360,6 +1364,16 @@ function decideIdleFlush(
   if (!inputs.paneIdle) {
     return none(
       `idle-flush: heavy and quiet, but pane is not confirmed idle -- deferring`,
+      cleared,
+    )
+  }
+  // IDLEFLUSHVETO812: a quiet transcript and an idle footer are also what a
+  // session looks like while a background shell, a Monitor or a sub-agent runs
+  // (a long build, a gh poll, an await). The flush would restart it and kill
+  // that work, so this tier waits until the footer carries no such counter.
+  if (inputs.paneBackgroundWork) {
+    return none(
+      `idle-flush: heavy and quiet, but the pane still runs background work (shell, monitor or sub-agent) -- deferring`,
       cleared,
     )
   }

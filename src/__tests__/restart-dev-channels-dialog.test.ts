@@ -197,6 +197,7 @@ describe('context guard: the resume prompt follows the dialog', () => {
       running: true,
       paneIdle: false,
       paneBusy: false,
+      paneBackgroundWork: false,
       sessionReady,
       handoffMtime: null,
       paneSaturated: false,

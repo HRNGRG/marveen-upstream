@@ -77,6 +77,7 @@ describe('resume give-up', () => {
         running: true,
         paneIdle: true,
         paneBusy: false,
+        paneBackgroundWork: false,
         sessionReady: false,
         handoffMtime: null,
         paneSaturated: false,

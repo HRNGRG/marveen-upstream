@@ -32,6 +32,7 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     running: true,
     paneIdle: true,
     paneBusy: false,
+    paneBackgroundWork: false,
     sessionReady: false,
     handoffMtime: 123,
     paneSaturated: false,
