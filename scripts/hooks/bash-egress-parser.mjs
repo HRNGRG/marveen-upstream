@@ -171,6 +171,65 @@ export function hostInDomains(host, domains) {
   for (const d of domains) if (host === d || host.endsWith(`.${d}`)) return true
   return false
 }
+// EGRESSMEASURE1025: a MEASURE-ONLY host class (owner decision A, 2026-10-25), so the fleet can read
+// the response headers of its own product (app.marveen.io) without that host being a vendor host
+// that any method, body, header or cookie may reach. store/egress-measure-hosts.json =
+// { "hosts": ["app.marveen.io"] }, the same exact-host shape check as the vendor list (no wildcard,
+// no suffix, no subdomain). A listed host is NOT added to the vendor hosts: classify() keeps denying
+// it. The only thing that passes is ONE command of exactly this shape, checked before classify():
+//   curl -q [ -s | -S | -sS | -Ss | --silent | --show-error | -I | --head | -i | --include
+//           | -D - | --dump-header - | -o /dev/null | --output /dev/null
+//           | -m N | --max-time N | --connect-timeout N | -X GET|HEAD | --request GET|HEAD ]... <one https URL>
+// - `curl` itself, first word, nothing before it (no env assignment, no path, no prefix word);
+// - `-q` as the FIRST argument, so ~/.curlrc is not read (an rc file could add data, headers, a
+//   cookie jar or a config);
+// - no other option at all: no -d/--data*/-F/-T (a body), -H/-b/-u/-K/--config (a header, a cookie,
+//   credentials, a config), -L (a redirect to another host), -x/--resolve/--connect-to (another
+//   route), -w, -e, -A;
+// - exactly one URL: https, a listed host, no userinfo, no port, no backslash, no curl glob;
+// - none of the shell's own syntax in the whole text: no $ ` ( ) < > | ; & \ { } [ ] * ~ newline,
+//   so there is no second command, no substitution, no redirection and no expansion to read.
+// Anything else falls through to classify(), which denies a measure host like any other. Every
+// command that passes here is appended to MEASURE_LOG: when, from where, the host and the path.
+export const MEASURE_HOSTS_PATH = process.env.BASH_EGRESS_MEASURE_HOSTS || join(ROOT, 'store', 'egress-measure-hosts.json')
+export const MEASURE_LOG = process.env.BASH_EGRESS_MEASURE_LOG || join(ROOT, 'store', 'bash-egress-measure.jsonl')
+export function loadMeasureHosts(path = MEASURE_HOSTS_PATH) {
+  try { return parseVendorHosts(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return new Set() }
+}
+const MEASURE_FORBIDDEN = /[$`()<>|;&\\{}[\]*~\n\r]/
+const MEASURE_FLAGS = new Set(['-s', '-S', '-sS', '-Ss', '--silent', '--show-error', '-I', '--head', '-i', '--include'])
+const MEASURE_VALUE_FLAGS = new Map([
+  ['-D', (v) => v === '-'], ['--dump-header', (v) => v === '-'],
+  ['-o', (v) => v === '/dev/null'], ['--output', (v) => v === '/dev/null'],
+  ['-m', (v) => /^\d{1,3}$/.test(v)], ['--max-time', (v) => /^\d{1,3}$/.test(v)],
+  ['--connect-timeout', (v) => /^\d{1,3}$/.test(v)],
+  ['-X', (v) => v === 'GET' || v === 'HEAD'], ['--request', (v) => v === 'GET' || v === 'HEAD'],
+])
+const MEASURE_URL = /^https:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._~!'+,=:@%/-]*)?(?:\?[A-Za-z0-9._~!'+,=:@%/?-]*)?$/
+// The measure-only verdict: { host, path } when the command is exactly the allowed shape for a listed
+// host, null otherwise (null never allows anything: classify() then judges the command as before).
+export function measureOnly(command, measureHosts) {
+  if (typeof command !== 'string' || measureHosts.size === 0) return null
+  const text = command.trim()
+  if (text === '' || MEASURE_FORBIDDEN.test(text)) return null
+  const w = shellWords(text)
+  if (w[0] !== 'curl' || w[1] !== '-q') return null
+  let url = null
+  for (let i = 2; i < w.length; i++) {
+    const a = w[i]
+    if (MEASURE_FLAGS.has(a)) continue
+    const check = MEASURE_VALUE_FLAGS.get(a)
+    if (check) { if (i + 1 >= w.length || !check(w[i + 1])) return null; i++; continue }
+    if (a.startsWith('-')) return null
+    if (url !== null) return null
+    url = a
+  }
+  if (url === null || !MEASURE_URL.test(url)) return null
+  let u
+  try { u = new URL(url) } catch { return null }
+  if (u.protocol !== 'https:' || u.username || u.password || u.port || !measureHosts.has(u.hostname)) return null
+  return { host: u.hostname, path: u.pathname, query: u.search !== '' }
+}
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 // One-liner URL schemes: every network scheme libcurl speaks (minus file:, and ipfs:/ipns:, which
 // resolve through a gateway, not the literal host). A one-liner reaches all of them through a curl
@@ -1878,6 +1937,17 @@ if (isInvokedDirectly()) {
   if (payload?.tool_name !== 'Bash') process.exit(0)
   let r
   setHookCwd(payload?.cwd)
+  // EGRESSMEASURE1025: the measure-only shape for a measure host passes, logged; anything else is
+  // judged below exactly as before. A log failure denies: the owner's condition is that every
+  // measurement is on record.
+  const measured = measureOnly(payload?.tool_input?.command, loadMeasureHosts())
+  if (measured) {
+    try {
+      mkdirSync(dirname(MEASURE_LOG), { recursive: true })
+      appendFileSync(MEASURE_LOG, JSON.stringify({ ts: new Date().toISOString(), cwd: payload?.cwd ?? process.cwd(), session: payload?.session_id ?? null, host: measured.host, path: measured.path, query: measured.query }) + '\n')
+      process.exit(0)
+    } catch { /* not on record: fall through to classify(), which denies the measure host */ }
+  }
   try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains()) } catch (e) {
     // Since curl https:// and wget left the deny list, this hook is the ONLY thing between them and an
     // external host, so an internal error on a command naming either verb denies instead of allowing.
