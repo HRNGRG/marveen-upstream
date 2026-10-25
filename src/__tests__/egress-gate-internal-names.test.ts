@@ -36,6 +36,26 @@ describe('isQuarantineDenied: internal spellings', () => {
     expect(isQuarantineDenied('https://[::ffff:0:5db8:d822]/')).toBe(false)
   })
 
+  it('denies local-use NAT64, 6to4 of an internal IPv4, site-local and all of link-local (EGRESSIPV6NEXT1025)', () => {
+    expect(isQuarantineDenied('http://[64:ff9b:1::7f00:1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[64:ff9b:1:abcd::1]/')).toBe(true)
+    expect(new URL('http://[2002:7f00:0001:0:0:0:0:0]/').hostname).toBe('[2002:7f00:1::]')
+    expect(isQuarantineDenied('http://[2002:7f00:1::]/')).toBe(true)
+    expect(isQuarantineDenied('http://[2002:a9fe:a9fe::1]/latest/meta-data')).toBe(true)
+    expect(isQuarantineDenied('http://[2002:c0a8:101:0:0:0:0:1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[fec0::1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[feff:ffff::1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[fe90::1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[febf::1]/')).toBe(true)
+  })
+
+  it('lets the neighbours of those ranges through (control)', () => {
+    expect(isQuarantineDenied('https://[2002:5db8:d822::1]/')).toBe(false) // 6to4 of a public IPv4
+    expect(isQuarantineDenied('https://[64:ff9b:2::1]/')).toBe(false) // outside the /48
+    expect(isQuarantineDenied('https://[fe7f::1]/')).toBe(false) // below fe80::/10
+    expect(isQuarantineDenied('https://[2606:4700:4700::1111]/')).toBe(false)
+  })
+
   it('denies an internal name with several trailing dots', () => {
     expect(isQuarantineDenied('http://localhost../')).toBe(true)
   })

@@ -200,6 +200,20 @@ function isPrivateIPv4(host) {
   return false
 }
 
+// The eight hextets of an all-hex IPv6 literal ("::" expanded), or null for anything else
+// (a dotted tail, a zone, a malformed literal): the callers then keep their other checks.
+function hextets(h) {
+  const halves = h.split('::')
+  if (halves.length > 2) return null
+  const part = (s) => (s === '' ? [] : s.split(':'))
+  const [head, tail] = [part(halves[0]), halves.length === 2 ? part(halves[1]) : []]
+  const missing = 8 - head.length - tail.length
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null
+  const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...tail]
+  if (!groups.every((x) => /^[0-9a-f]{1,4}$/.test(x))) return null
+  return groups.map((x) => parseInt(x, 16))
+}
+
 // IPv6 loopback / unique-local / link-local, with or without brackets.
 function isPrivateIPv6(host) {
   const h = host.replace(/^\[|\]$/g, '').toLowerCase()
@@ -207,6 +221,15 @@ function isPrivateIPv6(host) {
   if (h === '::1' || h === '::') return true
   if (h.startsWith('fc') || h.startsWith('fd')) return true // unique-local
   if (h.startsWith('fe80')) return true // link-local
+  // EGRESSIPV6NEXT1025: the ranges a prefix string check misses, read from the hextets.
+  const g = hextets(h)
+  if (g) {
+    if ((g[0] & 0xffc0) === 0xfe80) return true // link-local is fe80::/10, not only fe80:
+    if ((g[0] & 0xffc0) === 0xfec0) return true // site-local fec0::/10 (deprecated, still routed inside sites)
+    if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true // local-use NAT64 64:ff9b:1::/48 (RFC 8215)
+    // 6to4 (2002::/16) carries an IPv4 address in hextets 1 and 2; a relay delivers to it.
+    if (g[0] === 0x2002) return isPrivateIPv4([g[1] >> 8, g[1] & 255, g[2] >> 8, g[2] & 255].join('.'))
+  }
   // IPv4-mapped (::ffff:10.0.0.1) -- reuse the v4 rules on the tail.
   const tail = h.split(':').pop() ?? ''
   if (tail.includes('.')) return isPrivateIPv4(tail)
