@@ -190,7 +190,8 @@ export function hostInDomains(host, domains) {
 // - none of the shell's own syntax in the whole text: no $ ` ( ) < > | ; & \ { } [ ] * ~ newline,
 //   so there is no second command, no substitution, no redirection and no expansion to read.
 // Anything else falls through to classify(), which denies a measure host like any other. Every
-// command that passes here is appended to MEASURE_LOG: when, from where, the host and the path.
+// command that passes here is appended to MEASURE_LOG: when, from where, the host, the path and the
+// query's length (never its text).
 export const MEASURE_HOSTS_PATH = process.env.BASH_EGRESS_MEASURE_HOSTS || join(ROOT, 'store', 'egress-measure-hosts.json')
 export const MEASURE_LOG = process.env.BASH_EGRESS_MEASURE_LOG || join(ROOT, 'store', 'bash-egress-measure.jsonl')
 export function loadMeasureHosts(path = MEASURE_HOSTS_PATH) {
@@ -228,7 +229,10 @@ export function measureOnly(command, measureHosts) {
   let u
   try { u = new URL(url) } catch { return null }
   if (u.protocol !== 'https:' || u.username || u.password || u.port || !measureHosts.has(u.hostname)) return null
-  return { host: u.hostname, path: u.pathname, query: u.search !== '' }
+  // The query's LENGTH, never its text (Marveen 45624): enough to tell a token-carrying link from a
+  // bare one. Counted on the command's own spelling, not u.search: WHATWG re-encodes ' in a query.
+  const q = url.indexOf('?')
+  return { host: u.hostname, path: u.pathname, query: u.search !== '', queryLength: q === -1 ? 0 : url.length - q - 1 }
 }
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 // One-liner URL schemes: every network scheme libcurl speaks (minus file:, and ipfs:/ipns:, which
@@ -1944,7 +1948,7 @@ if (isInvokedDirectly()) {
   if (measured) {
     try {
       mkdirSync(dirname(MEASURE_LOG), { recursive: true })
-      appendFileSync(MEASURE_LOG, JSON.stringify({ ts: new Date().toISOString(), cwd: payload?.cwd ?? process.cwd(), session: payload?.session_id ?? null, host: measured.host, path: measured.path, query: measured.query }) + '\n')
+      appendFileSync(MEASURE_LOG, JSON.stringify({ ts: new Date().toISOString(), cwd: payload?.cwd ?? process.cwd(), session: payload?.session_id ?? null, host: measured.host, path: measured.path, query: measured.query, query_len: measured.queryLength }) + '\n')
       process.exit(0)
     } catch { /* not on record: fall through to classify(), which denies the measure host */ }
   }

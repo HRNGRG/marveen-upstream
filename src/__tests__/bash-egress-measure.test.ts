@@ -30,8 +30,13 @@ describe('measureOnly: the allowed shape', () => {
     expect(measureOnly(cmd, HOSTS)).not.toBeNull()
   })
 
-  it('names the host and the path, and only says whether there was a query', () => {
-    expect(measureOnly('curl -q -I https://app.marveen.io/levalasztas?t=secret', HOSTS)).toEqual({ host: 'app.marveen.io', path: '/levalasztas', query: true })
+  it('names the host and the path, and of the query only whether there was one and its length', () => {
+    expect(measureOnly('curl -q -I https://app.marveen.io/levalasztas?t=secret', HOSTS)).toEqual({ host: 'app.marveen.io', path: '/levalasztas', query: true, queryLength: 8 })
+    expect(measureOnly('curl -q -I https://app.marveen.io/levalasztas', HOSTS)).toMatchObject({ query: false, queryLength: 0 })
+  })
+
+  it("counts the query as spelled in the command, not as re-encoded (' becomes %27)", () => {
+    expect(measureOnly(`curl -q -I "https://app.marveen.io/x?a'b"`, HOSTS)).toMatchObject({ query: true, queryLength: 3 })
   })
 })
 
@@ -149,11 +154,11 @@ describe('the hook end to end', () => {
   })
   const denied = (r: ReturnType<typeof run>) => r.stdout.includes('"permissionDecision":"deny"')
 
-  it('the measurement passes and is on record, without the query', () => {
+  it('the measurement passes and is on record, with the query length but not its text', () => {
     const r = run('curl -q -sS -D - -o /dev/null https://app.marveen.io/levalasztas?t=secretsecret')
     expect(denied(r)).toBe(false)
     const line = JSON.parse(readFileSync(measureLog, 'utf-8').trim().split('\n').pop() as string)
-    expect(line).toMatchObject({ host: 'app.marveen.io', path: '/levalasztas', query: true, session: 'sess-1', cwd: dir })
+    expect(line).toMatchObject({ host: 'app.marveen.io', path: '/levalasztas', query: true, query_len: 14, session: 'sess-1', cwd: dir })
     expect(JSON.stringify(line)).not.toContain('secretsecret')
   })
 
