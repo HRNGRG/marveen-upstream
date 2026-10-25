@@ -202,6 +202,18 @@ export function isPluginPollerPid(psEwwOutput: string, pid: number, pluginRootNe
   return false
 }
 
+/**
+ * This state dir's live-poller candidates for the channel liveness probe
+ * (FORKFA161A5921): the same two markers the reaper trusts (the anchored
+ * `<envVar>=<chanDir>` literal AND the provider's CLAUDE_PLUGIN_ROOT), in one
+ * env-scan snapshot. The long-lived poller is `bun server.ts`, an argv with no
+ * provider slug, so once its `bun run --cwd .../<provider>/<ver>` wrapper is
+ * gone only its environment still says whose poller it is.
+ */
+export function stateDirPluginPollerPids(provider: ChannelProviderType, chanDir: string, psEww: string = psEwwSnapshot(chanDir)): number[] {
+  return parseStateDirPollerPids(psEww, STATE_ENV_VAR[provider], chanDir, PLUGIN_ROOT_NEEDLE[provider])
+}
+
 // One env-scan snapshot (PS_ENV_SCAN_CMD, so tty-less processes are listed on
 // macOS too); empty on failure (no candidate then, so nothing is reaped).
 function psEwwSnapshot(chanDir: string): string {

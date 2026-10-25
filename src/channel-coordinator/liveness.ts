@@ -17,6 +17,7 @@ import { channelStateDir, type ChannelProviderType } from '../channel-provider.j
 import { agentDir } from '../web/agent-config.js'
 import { matchesProviderPollerCmd } from './provider-poller-match.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { stateDirPluginPollerPids } from '../web/channel-poller-reap.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -76,10 +77,22 @@ export interface PluginAliveContext {
    * somewhere", not "this session has one" (BOOTSTAGGER1007 b review, #1762).
    */
   strictTree?: boolean
+  /**
+   * The last resort, asked only when the tree walk and bot.pid found nothing:
+   * the pids of this session's own state-dir plugin pollers from an env scan
+   * (stateDirPluginPollerPids). The long-lived poller is `bun server.ts`, whose
+   * argv carries no provider slug, so matchesProviderPollerCmd sees it only
+   * through its `bun run --cwd .../<provider>/<ver>` wrapper; once the wrapper
+   * has exited, the poller is still running and only its environment names it
+   * (FORKFA161A5921, after Argos's fa161a5: the monitor restarted three
+   * sub-agents every 3-4 minutes on that false "down"). Not asked with
+   * strictTree. Lazy, because the env scan is the costly snapshot.
+   */
+  stateDirPollerPids?: () => number[]
 }
 
 export function decideHasPluginAlive(ctx: PluginAliveContext): boolean {
-  const { psOutput, claudePid, providerType, botPid, isPidAlive, agentName, debugLog, strictTree } = ctx
+  const { psOutput, claudePid, providerType, botPid, isPidAlive, agentName, debugLog, strictTree, stateDirPollerPids } = ctx
   const lines = psOutput.split('\n').slice(1)
   const childrenOf = new Map<number, number[]>()
   const cmdOf = new Map<number, string>()
@@ -134,6 +147,13 @@ export function decideHasPluginAlive(ctx: PluginAliveContext): boolean {
         debugLog?.('discord plugin alive via process scan', { claudePid, discordPid: pid, agentName })
         return true
       }
+    }
+  }
+
+  for (const pid of stateDirPollerPids?.() ?? []) {
+    if (pid > 1 && isPidAlive(pid)) {
+      debugLog?.('plugin alive via state-dir env scan', { claudePid, pollerPid: pid, agentName, providerType })
+      return true
     }
   }
 
@@ -217,6 +237,7 @@ export function probeChannelPluginLiveness(
       botPid,
       agentName,
       strictTree: opts.strictTree,
+      stateDirPollerPids: () => stateDirPluginPollerPids(providerType, stateDir),
       isPidAlive: (pid) => {
         try { process.kill(pid, 0); return true } catch { return false }
       },
