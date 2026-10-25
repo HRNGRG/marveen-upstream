@@ -125,6 +125,11 @@ describe('only a poller started since the claude counts', () => {
     expect(pollersStartedSince(70994, [61000, 71046], PS([[70994, '10:00'], [61000, '2-00:00:00'], [71046, '10:00']]))).toEqual([71046])
   })
 
+  it('a candidate whose etime does not parse gives no evidence', () => {
+    expect(pollersStartedSince(70994, [71046], `70994      10:00\n71046    garbage`)).toEqual([])
+    expect(pollersStartedSince(70994, [71046], `70994    garbage\n71046      09:00`)).toEqual([])
+  })
+
   it('no row for the claude, or for a candidate: no evidence, nothing counts', () => {
     expect(pollersStartedSince(70994, [71046], PS([[71046, '00:05']]))).toEqual([])
     expect(pollersStartedSince(70994, [71046], PS([[70994, '10:00']]))).toEqual([])

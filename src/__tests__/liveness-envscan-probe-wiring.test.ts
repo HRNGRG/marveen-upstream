@@ -12,13 +12,15 @@ const PS = [
 ].join('\n')
 let envScan = ''
 let etimes = ''
+// When set, the `ps -o pid=,etime=` call throws like execFileSync on a non-zero exit, with this stdout (or none).
+let etimesThrow: { stdout?: string } | null = null
 
 vi.mock('node:child_process', async (orig) => {
   const real = await orig<typeof import('node:child_process')>()
   return {
     ...real,
     execFileSync: (cmd: string, args: string[], opts: unknown) =>
-      cmd === '/bin/ps' ? (args[1] === 'pid=,etime=' ? etimes : PS)
+      cmd === '/bin/ps' ? (args[1] === 'pid=,etime=' ? (etimesThrow ? (() => { throw Object.assign(new Error('ps exit 1'), etimesThrow) })() : etimes) : PS)
         : (real.execFileSync as unknown as (c: string, a: string[], o: unknown) => string)(cmd, args, opts),
     execSync: (cmd: string, opts: unknown) =>
       cmd === '/bin/ps axeww' ? envScan : (real.execSync as unknown as (c: string, o: unknown) => string)(cmd, opts),
@@ -43,6 +45,26 @@ describe('probeChannelPluginLiveness asks the state-dir env scan', () => {
     envScan = row(channelStateDir('telegram', agentDir(AGENT)))
     etimes = `70994 10:00\n${POLLER_PID} 1:10:00`
     expect(probeChannelPluginLiveness(70994, 'telegram', AGENT)).toBe('down')
+  })
+  it('...the start times cannot be read at all (ps throws, no output): down, never alive', () => {
+    envScan = row(channelStateDir('telegram', agentDir(AGENT)))
+    etimesThrow = {}
+    try {
+      expect(probeChannelPluginLiveness(70994, 'telegram', AGENT)).toBe('down')
+    } finally {
+      etimesThrow = null
+    }
+  })
+  it('...ps exits 1 because a pid went away but prints the rest: those rows still count', () => {
+    envScan = row(channelStateDir('telegram', agentDir(AGENT)))
+    etimesThrow = { stdout: `70994 10:00\n${POLLER_PID} 09:58` }
+    try {
+      expect(probeChannelPluginLiveness(70994, 'telegram', AGENT)).toBe('alive')
+      etimesThrow = { stdout: '70994 10:00' }
+      expect(probeChannelPluginLiveness(70994, 'telegram', AGENT)).toBe('down')
+    } finally {
+      etimesThrow = null
+    }
   })
   it('...and with no such row: down', () => {
     envScan = row('/elsewhere/.claude/channels/telegram')

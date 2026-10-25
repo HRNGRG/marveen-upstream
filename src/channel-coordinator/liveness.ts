@@ -284,9 +284,11 @@ export function probeChannelPluginLiveness(
         try {
           return pollersStartedSince(claudePid, candidates, psEtimes([claudePid, ...candidates]))
         } catch (err) {
-          // ps exits 1 when one of the pids is gone; without the times there is no evidence.
-          logger.debug({ err, claudePid, agentName, providerType }, 'state-dir env scan: start times unreadable, no fallback verdict')
-          return []
+          // ps exits 1 when one of the pids is gone, and still prints the others: those rows are evidence, a
+          // missing row is not (pollersStartedSince drops it). Anything else (no output at all): no verdict.
+          const stdout = (err as { stdout?: unknown }).stdout
+          logger.debug({ err, claudePid, agentName, providerType }, 'state-dir env scan: ps -o etime failed, reading what it printed')
+          return typeof stdout === 'string' ? pollersStartedSince(claudePid, candidates, stdout) : []
         }
       },
       isPidAlive: (pid) => {
