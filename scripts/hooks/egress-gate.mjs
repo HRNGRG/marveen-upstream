@@ -202,6 +202,9 @@ function isPrivateIPv4(host) {
 
 // The eight hextets of an all-hex IPv6 literal ("::" expanded), or null for anything else
 // (a dotted tail, a zone, a malformed literal): the callers then keep their other checks.
+// Safe only because the one caller chain (isQuarantineDenied -> isPrivateIPv6) passes the WHATWG
+// parser's canonical host, which writes an embedded IPv4 in hex and rejects zones. A new caller
+// that passes a raw host would leave the dotted and zoned spellings of these ranges open.
 function hextets(h) {
   const halves = h.split('::')
   if (halves.length > 2) return null
