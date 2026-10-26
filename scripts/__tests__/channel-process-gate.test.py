@@ -43,6 +43,41 @@ MASQUERADE = ("3005022 3004904 bun run --cwd /home/user/.local/share/"
               "claude-plugins-official/telegram/0.0.7 --shell=bun --silent start")
 
 
+# CHANPROCGATEFP1026 (measured 2026-10-26 on the main agent, pid 5921, anonymised):
+# three channels, three runtimes. Only the bun one used to count as alive, so the
+# gate alarmed "slack-channel, gromzo-channel missing" for running workers.
+CLAUDE_THREE = ("4005921 4001008 /opt/homebrew/bin/claude --continue --channels "
+                "plugin:telegram@claude-plugins-official plugin:slack-channel@marveen-marketplace "
+                "plugin:gromzo-channel@gromzo-local")
+TMUX_THREE = "marveen-channels 4005921\n"
+BUN_TG3 = ("4006184 4005921 bun run --cwd /home/user/.claude/plugins/cache/"
+           "claude-plugins-official/telegram/0.0.6 --shell=bun --silent start")
+NODE_SLACK = ("4006185 4005921 node /home/user/.claude/plugins/cache/marveen-marketplace/"
+              "slack-channel/0.1.0/node_modules/.bin/tsx /home/user/.claude/plugins/cache/"
+              "marveen-marketplace/slack-channel/0.1.0/server.ts")
+# A directory marketplace: Claude Code runs the plugin from its source dir, not the cache.
+NODE_GROMZO = "4006187 4005921 node /home/user/local-plugins/gromzo/gromzo-channel/dist/server.js"
+# A shell under the session that merely NAMES the gromzo path is not a worker.
+SHELL_GROMZO = "4006190 4005921 /bin/zsh -c ls /home/user/local-plugins/gromzo/gromzo-channel/dist"
+MARKETS = {"gromzo-local": {"source": {"source": "directory", "path": "/home/user/local-plugins/gromzo"}},
+           "marveen-marketplace": {"source": {"source": "github", "repo": "x/y"}}}
+
+
+def run_three(ps_rows, markets=MARKETS):
+    import json as _json
+    with tempfile.TemporaryDirectory() as d:
+        ps, tm, km = (os.path.join(d, n) for n in ("ps.txt", "tmux.txt", "km.json"))
+        with open(ps, "w") as fh:
+            fh.write("\n".join([HEADER] + list(ps_rows)) + "\n")
+        with open(tm, "w") as fh:
+            fh.write(TMUX_THREE)
+        with open(km, "w") as fh:
+            _json.dump(markets, fh)
+        cmd = [sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm,
+               "--state", os.path.join(d, "state.json"), "--marketplaces-file", km]
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+
 def run(ps_rows, extra=()):
     with tempfile.TemporaryDirectory() as d:
         ps = os.path.join(d, "ps.txt")
@@ -62,6 +97,33 @@ class GateTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("[zold] main-agent-channels", r.stdout)
         self.assertNotIn("PIROS", r.stdout)
+
+    def test_node_and_directory_marketplace_workers_count_as_alive(self):
+        """CHANPROCGATEFP1026: bun, node-from-cache and node-from-directory are all workers."""
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_GROMZO])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=-", r.stdout)
+
+    def test_a_really_missing_directory_worker_is_still_red(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_a_shell_naming_the_plugin_path_is_not_a_worker(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, SHELL_GROMZO])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_a_directory_worker_without_its_registry_entry_is_not_guessed(self):
+        """No known_marketplaces entry for the path: the gate does not invent the name."""
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_GROMZO], markets={})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_a_missing_node_slack_worker_is_red(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_GROMZO])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=marveen-marketplace/slack-channel", r.stdout)
 
     def test_missing_telegram_worker_is_red(self):
         """The measured 09-05 / 09-06 failure: declared but no worker."""

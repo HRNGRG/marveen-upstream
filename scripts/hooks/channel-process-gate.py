@@ -12,8 +12,15 @@ definition, we cannot report that over Telegram.
 What it measures (process facts only, no network):
   1. every running `claude ... --channels plugin:<name>@<marketplace> ...`
      -> the set of channels that session DECLARES
-  2. its child `bun run --cwd .../<marketplace>/<name>/<version> ... start`
-     processes -> the set of channels that are actually ALIVE
+  2. its child worker processes -> the set of channels that are actually ALIVE.
+     A worker is named by the plugin path in its argv, whatever starts it
+     (CHANPROCGATEFP1026: the first version knew only `bun run --cwd`, so a
+     node-started plugin, or one from a directory marketplace, never counted
+     and the gate cried "missing" for a running worker):
+       .../plugins/cache/<marketplace>/<plugin>/<version>[/...]  (any runtime)
+       <directory-marketplace path>/<plugin>[/...]               (known_marketplaces.json)
+     Only a runtime's argv is read (bun, node, deno, tsx, python), so a shell
+     or a grep that merely MENTIONS a plugin path never makes it alive.
   3. MISSING = declared - alive, per session
 
 Exit codes:
@@ -59,7 +66,56 @@ STATE = os.path.join(INSTALL_ROOT, "store", ".channel-process-gate-state.json")
 CH_DIR = os.path.join(os.path.expanduser("~"), ".claude", "channels")
 
 DECL_RE = re.compile(r"plugin:([A-Za-z0-9_.-]+)@([A-Za-z0-9_.-]+)")
-CWD_RE = re.compile(r"--cwd\s+(\S+)")
+CACHE_RE = re.compile(r"/plugins/cache/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/[^/\s]+")
+# The interpreters a plugin worker runs under. A child that is anything else (a
+# shell, grep, ps) is never a worker, even when its argv names a plugin path.
+RUNTIMES = {"bun", "node", "deno", "tsx", "python", "python3"}
+
+# The registries that name a directory marketplace's path: the main agent's own
+# config dir and the shared one (the provisioner copies the shared file over the
+# isolated one on every start, so normally both say the same).
+MARKETPLACE_FILES = [
+    os.path.join(INSTALL_ROOT, ".channels-config", "plugins", "known_marketplaces.json"),
+    os.path.join(os.path.expanduser("~"), ".claude", "plugins", "known_marketplaces.json"),
+]
+
+
+def directory_marketplaces(files):
+    """-> {marketplace: path} for every `directory` source in the given registries."""
+    out = {}
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        for name, m in (data.items() if isinstance(data, dict) else []):
+            src = m.get("source") if isinstance(m, dict) else None
+            if isinstance(src, dict) and src.get("source") == "directory" and isinstance(src.get("path"), str):
+                out.setdefault(name, src["path"].rstrip("/"))
+    return out
+
+
+def plugin_of(args, dir_markets):
+    """The `<marketplace>/<plugin>` a worker's argv runs, or None.
+
+    Only a runtime's argv counts (RUNTIMES, by the basename of argv[0]); then
+    any absolute-path token, or the value of --cwd, names the plugin."""
+    argv = args.split()
+    if not argv or os.path.basename(argv[0]) not in RUNTIMES:
+        return None
+    for tok in argv[1:]:
+        if not tok.startswith("/"):
+            continue
+        m = CACHE_RE.search(tok)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        for market, root in dir_markets.items():
+            if tok.startswith(root + "/"):
+                rest = tok[len(root) + 1:].split("/")
+                if rest and rest[0]:
+                    return f"{market}/{rest[0]}"
+    return None
 
 
 def read_ps(ps_file):
@@ -110,8 +166,9 @@ def session_name(pid, procs, tmux_map):
     return f"pid:{pid}"
 
 
-def measure(procs, tmux_map):
+def measure(procs, tmux_map, dir_markets=None):
     """-> list of {session, pid, declared:[], alive:[], missing:[]}"""
+    dir_markets = dir_markets or {}
     out = []
     for pid, p in sorted(procs.items()):
         args = p["args"]
@@ -126,12 +183,9 @@ def measure(procs, tmux_map):
         for cpid, c in procs.items():
             if c["ppid"] != pid:
                 continue
-            m = CWD_RE.search(c["args"])
-            if not m or "plugins/cache" not in m.group(1):
-                continue
-            seg = m.group(1).rstrip("/").split("/")
-            if len(seg) >= 3:
-                alive.add(f"{seg[-3]}/{seg[-2]}")  # <marketplace>/<plugin>
+            name = plugin_of(c["args"], dir_markets)
+            if name:
+                alive.add(name)
         out.append({
             "session": session_name(pid, procs, tmux_map),
             "pid": pid,
@@ -206,6 +260,8 @@ def main():
                     help="actually send through scripts/notify.sh on a transition")
     ap.add_argument("--state", help="override state file path")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--marketplaces-file", action="append",
+                    help="known_marketplaces.json to read instead of the installed ones (tests)")
     a = ap.parse_args()
     global STATE
     if a.state:
@@ -222,7 +278,8 @@ def main():
         print("MERESI HIBA: ures ps-kimenet", file=sys.stderr)
         return 2
 
-    rows = measure(procs, parse_tmux(tmux_text))
+    rows = measure(procs, parse_tmux(tmux_text),
+                   directory_marketplaces(a.marketplaces_file or MARKETPLACE_FILES))
     if a.only:
         rows = [r for r in rows if r["session"] == a.only]
         if not rows:
