@@ -19,8 +19,9 @@ What it measures (process facts only, no network):
      and the gate cried "missing" for a running worker):
        .../plugins/cache/<marketplace>/<plugin>/<version>[/...]  (any runtime)
        <directory-marketplace path>/<plugin>[/...]               (known_marketplaces.json)
-     Only a runtime's argv is read (bun, node, deno, tsx, python), so a shell
-     or a grep that merely MENTIONS a plugin path never makes it alive.
+     Only a runtime's argv is read (bun, node, deno, tsx, python), and in it
+     only the --cwd value and the executed script, so a shell, a grep, or an
+     argument that merely NAMES a plugin path never makes it alive.
   3. MISSING = declared - alive, per session
 
 Exit codes:
@@ -81,7 +82,9 @@ MARKETPLACE_FILES = [
 
 
 def directory_marketplaces(files):
-    """-> {marketplace: path} for every `directory` source in the given registries."""
+    """-> {marketplace: [path, ...]} for every `directory` source in the given
+    registries. Every root counts (Dani 50006): if the two registries disagree,
+    the older one must not turn a running worker into a false alarm."""
     out = {}
     for f in files:
         try:
@@ -92,29 +95,51 @@ def directory_marketplaces(files):
         for name, m in (data.items() if isinstance(data, dict) else []):
             src = m.get("source") if isinstance(m, dict) else None
             if isinstance(src, dict) and src.get("source") == "directory" and isinstance(src.get("path"), str):
-                out.setdefault(name, src["path"].rstrip("/"))
+                root = src["path"].rstrip("/")
+                if root and root not in out.setdefault(name, []):
+                    out[name].append(root)
     return out
+
+
+def worker_paths(argv):
+    """The paths a runtime child actually runs from: the --cwd value and the
+    script it executes (the first argument that is not an option). Any other
+    argument may merely NAME a plugin path (Dani 50006: an MCP server with an
+    allowed-dir under it), so it is not read."""
+    out = []
+    for i, tok in enumerate(argv[1:], start=1):
+        if tok == "--cwd" and i + 1 < len(argv):
+            out.append(argv[i + 1])
+        elif tok.startswith("--cwd="):
+            out.append(tok[len("--cwd="):])
+    for i, tok in enumerate(argv[1:], start=1):
+        if tok.startswith("-"):
+            continue
+        if argv[i - 1] == "--cwd":
+            continue
+        out.append(tok)
+        break
+    return [p for p in out if p.startswith("/")]
 
 
 def plugin_of(args, dir_markets):
     """The `<marketplace>/<plugin>` a worker's argv runs, or None.
 
-    Only a runtime's argv counts (RUNTIMES, by the basename of argv[0]); then
-    any absolute-path token, or the value of --cwd, names the plugin."""
+    Only a runtime's argv counts (RUNTIMES, by the basename of argv[0]), and in
+    it only the paths it runs from (worker_paths)."""
     argv = args.split()
     if not argv or os.path.basename(argv[0]) not in RUNTIMES:
         return None
-    for tok in argv[1:]:
-        if not tok.startswith("/"):
-            continue
+    for tok in worker_paths(argv):
         m = CACHE_RE.search(tok)
         if m:
             return f"{m.group(1)}/{m.group(2)}"
-        for market, root in dir_markets.items():
-            if tok.startswith(root + "/"):
-                rest = tok[len(root) + 1:].split("/")
-                if rest and rest[0]:
-                    return f"{market}/{rest[0]}"
+        for market, roots in dir_markets.items():
+            for root in roots:
+                if tok.startswith(root + "/"):
+                    rest = tok[len(root) + 1:].split("/")
+                    if rest and rest[0]:
+                        return f"{market}/{rest[0]}"
     return None
 
 

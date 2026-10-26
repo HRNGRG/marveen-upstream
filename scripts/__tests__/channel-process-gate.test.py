@@ -63,18 +63,29 @@ MARKETS = {"gromzo-local": {"source": {"source": "directory", "path": "/home/use
            "marveen-marketplace": {"source": {"source": "github", "repo": "x/y"}}}
 
 
-def run_three(ps_rows, markets=MARKETS):
+# Not a worker even though it is a runtime: the gromzo path is only an argument
+# (an MCP server's allowed dir), not what it runs (Dani 50006).
+NODE_MCP_NAMING = ("4006191 4005921 node /opt/mcp/server.js --allowed-dir "
+                   "/home/user/local-plugins/gromzo/gromzo-channel")
+# Not a worker: the directory root appears inside a longer path, not as its prefix.
+NODE_NOT_UNDER_ROOT = "4006192 4005921 node /x/home/user/local-plugins/gromzo/gromzo-channel/dist/server.js"
+
+
+def run_three(ps_rows, markets=MARKETS, extra_markets=()):
     import json as _json
     with tempfile.TemporaryDirectory() as d:
-        ps, tm, km = (os.path.join(d, n) for n in ("ps.txt", "tmux.txt", "km.json"))
+        ps, tm = (os.path.join(d, n) for n in ("ps.txt", "tmux.txt"))
         with open(ps, "w") as fh:
             fh.write("\n".join([HEADER] + list(ps_rows)) + "\n")
         with open(tm, "w") as fh:
             fh.write(TMUX_THREE)
-        with open(km, "w") as fh:
-            _json.dump(markets, fh)
         cmd = [sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm,
-               "--state", os.path.join(d, "state.json"), "--marketplaces-file", km]
+               "--state", os.path.join(d, "state.json")]
+        for i, m in enumerate([markets] + list(extra_markets)):
+            km = os.path.join(d, f"km{i}.json")
+            with open(km, "w") as fh:
+                _json.dump(m, fh)
+            cmd += ["--marketplaces-file", km]
         return subprocess.run(cmd, capture_output=True, text=True)
 
 
@@ -124,6 +135,22 @@ class GateTest(unittest.TestCase):
         r = run_three([CLAUDE_THREE, BUN_TG3, NODE_GROMZO])
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("HIANYZO=marveen-marketplace/slack-channel", r.stdout)
+
+    def test_a_runtime_naming_the_plugin_path_only_as_an_argument_is_not_a_worker(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_MCP_NAMING])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_the_directory_root_must_be_a_prefix_not_a_substring(self):
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_NOT_UNDER_ROOT])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=gromzo-local/gromzo-channel", r.stdout)
+
+    def test_either_registrys_root_names_the_worker(self):
+        """Two registries that disagree: the stale one must not raise a false alarm."""
+        stale = {"gromzo-local": {"source": {"source": "directory", "path": "/old/place/gromzo"}}}
+        r = run_three([CLAUDE_THREE, BUN_TG3, NODE_SLACK, NODE_GROMZO], markets=stale, extra_markets=[MARKETS])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_missing_telegram_worker_is_red(self):
         """The measured 09-05 / 09-06 failure: declared but no worker."""
