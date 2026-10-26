@@ -1234,8 +1234,6 @@ export function deliveryFallbackClause(
   return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd Telegramon (chat_id: ${ownerTelegramChat}, reply tool), es az uzenet ELSO sora nevezze meg a ${channelDisplayName(provider)} hibat (a hibauzenettel); mas cimzettet ne tippelj. `
 }
 
-/** The prompt prefix of a non-heartbeat scheduled task whose delivery target resolved.
- *  `threadId`: a Telegram topic (resolveTaskTopicThreadId); without one the text is unchanged. */
 // The task types whose prompt carries ONLY a bare tag, never a "send the result to
 // <channel>" instruction. heartbeat: a background check nobody is waiting for.
 // dream-engine (#2284): its SKILL.md forbids a channel send twice (the owner is asleep;
@@ -1249,6 +1247,8 @@ export function silentTaskTag(task: Pick<ScheduledTask, 'type' | 'name'>): strin
   return null
 }
 
+/** The prompt prefix of a non-heartbeat scheduled task whose delivery target resolved.
+ *  `threadId`: a Telegram topic (resolveTaskTopicThreadId); without one the text is unchanged. */
 export function taskDeliveryPrefix(taskName: string, provider: ChannelProviderType, chatId: string, isMain: boolean, threadId: number | null = null): string {
   const topic = threadId === null ? '' : `, message_thread_id: ${threadId}`
   return `[Utemezett feladat: ${taskName}] Az eredmenyt kuldd el ${channelDeliveryName(provider)} (chat_id: ${chatId}${topic}, reply tool). ${deliveryFallbackClause(provider, isMain)}`
