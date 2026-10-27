@@ -748,3 +748,17 @@ and the main agent's `email_send` approval gate keeps its current reach.
     cwd, not `dir`;
   - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
+
+# Autonomy levels: a raise takes the owner
+
+FLEETIMPORTGATE1022 (4). `POST /api/autonomy` raised any unlocked category up
+to its `maxLevel` with the fleet's one shared dashboard token, so any agent
+could set `email_send` to 3, and at 3 the mail approval gate
+(`scripts/hooks/email-approval-gate.py`) lets every send through. Once a
+dashboard login exists, a raise takes the owner's session
+(`mayIssueCredentials`); any other caller, a full device key included, gets
+403 `owner_session_required` and nothing is written. Lowering and setting the
+same level stay on the token: they only narrow what an agent may do. A current
+level that is not a number counts as a raise. On a fresh install with no
+dashboard user yet, the token keeps raising for the setup. The locked
+categories and `maxLevel` are checked as before.
