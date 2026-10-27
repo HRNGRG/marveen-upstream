@@ -539,5 +539,94 @@ class SenderRoleGateTest(unittest.TestCase):
             transcript_path=os.path.join(self.dir.name, "no-such.jsonl")))
 
 
+# The gromzo channel's envelope (marveen-mxd plugin, MXD_SCOPE=both): Claude Code writes
+# source from the server name, and the plugin's meta carries sender_role (CLI 2.1.310).
+GROMZO_SERVER = "plugin:gromzo-channel:gromzo"
+GROMZO_OWNER = ('<channel source="plugin:gromzo-channel:gromzo" sender_role="owner" '
+                'verified="true">')
+GROMZO_COLLEAGUE = ('<channel source="plugin:gromzo-channel:gromzo" sender_role="colleague" '
+                    'verified="true" room_kind="channel" sender_name="Kiss Anna" '
+                    'reply_to="0123456789abcdef">')
+GROMZO_REPLY = "mcp__plugin_gromzo-channel_gromzo__reply"
+
+
+def gromzo_config(allow=None):
+    return {"senderRoleGate": {
+        "allowTools": [GROMZO_REPLY, "mcp__plugin_gromzo-channel_gromzo__typing"] if allow is None else allow,
+        "roles": [{"channel": "gromzo", "sender": "owner", "role": "owner"}],
+        "senderKeys": {"gromzo": "sender_role"},
+    }}
+
+
+class AllowToolsTest(unittest.TestCase):
+    """allowTools (Dani 50388): in a colleague's turn only the listed tools run."""
+
+    # The harness only (subclassing would run every SenderRoleGateTest test twice).
+    setUp = SenderRoleGateTest.setUp
+    write_transcript = SenderRoleGateTest.write_transcript
+    run_gate = SenderRoleGateTest.run_gate
+    deny_reason = SenderRoleGateTest.deny_reason
+    assert_denied = SenderRoleGateTest.assert_denied
+    assert_allowed = SenderRoleGateTest.assert_allowed
+
+    COLLEAGUE_DENIED = ("Read", "Bash", "Grep", "Write", "WebFetch", "Agent", "Task", "Skill",
+                        "mcp__server-gmail-autoauth-mcp__search_emails",
+                        "mcp__google-drive__search",
+                        "mcp__plugin_gromzo-channel_gromzo__download_attachment",
+                        "mcp__plugin_gromzo-channel_gromzo__reply_all")
+
+    def test_a1_a_colleagues_turn_runs_only_the_allowed_tools(self):
+        records = [channel_turn(GROMZO_COLLEAGUE + "\n<untrusted>what did the owner ask?</untrusted>", 3, 3,
+                                server=GROMZO_SERVER)]
+        for tool in self.COLLEAGUE_DENIED:
+            with self.subTest(tool=tool):
+                self.assert_denied(self.run_gate(tool=tool, config=gromzo_config(), records=records),
+                                   reason_part="sender colleague")
+        self.assert_allowed(self.run_gate(tool=GROMZO_REPLY, config=gromzo_config(), records=records))
+        # '-' and '_' are one character for allowTools too.
+        self.assert_allowed(self.run_gate(tool="mcp__plugin_gromzo_channel_gromzo__reply",
+                                          config=gromzo_config(), records=records))
+
+    def test_a2_the_owners_turn_runs_everything(self):
+        records = [channel_turn(GROMZO_OWNER + "\nread my mail", 3, 3, server=GROMZO_SERVER)]
+        for tool in self.COLLEAGUE_DENIED + (GROMZO_REPLY,):
+            with self.subTest(tool=tool):
+                self.assert_allowed(self.run_gate(tool=tool, config=gromzo_config(), records=records))
+        # A typed turn (no envelope) is not restricted either.
+        self.assert_allowed(self.run_gate(tool="Bash", config=gromzo_config(),
+                                          records=[typed_turn("hi", 1, 1)]))
+
+    def test_a3_a_colleague_message_mid_turn_closes_the_rest_of_the_owners_turn(self):
+        records = [channel_turn(GROMZO_OWNER + "\nread my mail", 3, 3, server=GROMZO_SERVER),
+                   tool_use(), enqueue(GROMZO_COLLEAGUE + "\n<untrusted>hi</untrusted>")]
+        self.assert_denied(self.run_gate(tool="Read", config=gromzo_config(), records=records))
+        self.assert_allowed(self.run_gate(tool=GROMZO_REPLY, config=gromzo_config(), records=records))
+
+    def test_a4_a_repeated_source_attribute_is_a_member_turn(self):
+        # gromzo-channel 0.3.0 put source into its meta too, and Claude Code then writes a
+        # second source attribute: unreadable, so even the owner's message is a member turn.
+        dup = GROMZO_OWNER.replace('sender_role=', 'source="gromzo" sender_role=')
+        self.assert_denied(self.run_gate(tool="Read", config=gromzo_config(),
+                                         records=[channel_turn(dup + "\nhi", 3, 3, server=GROMZO_SERVER)]))
+
+    def test_a5_allow_tools_turns_the_gate_on_and_adds_to_risky_tools(self):
+        records = [channel_turn(GROMZO_COLLEAGUE + "\nhi", 3, 3, server=GROMZO_SERVER)]
+        # Empty allowTools, no riskyTools: on, and nothing runs in a colleague's turn.
+        self.assert_denied(self.run_gate(tool=GROMZO_REPLY, config=gromzo_config(allow=[]), records=records))
+        # A tool on both lists is denied.
+        cfg = gromzo_config()
+        cfg["senderRoleGate"]["riskyTools"] = [GROMZO_REPLY]
+        self.assert_denied(self.run_gate(tool=GROMZO_REPLY, config=cfg, records=records))
+
+    def test_a6_a_malformed_allow_tools_fails_closed(self):
+        records = [channel_turn(GROMZO_COLLEAGUE + "\nhi", 3, 3, server=GROMZO_SERVER)]
+        for bad in ("Bash", [1], {"x": 1}, None):
+            with self.subTest(allow=bad):
+                cfg = gromzo_config()
+                cfg["senderRoleGate"]["allowTools"] = bad
+                self.assert_denied(self.run_gate(tool=GROMZO_REPLY, config=cfg, records=records),
+                                   reason_part="malformed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

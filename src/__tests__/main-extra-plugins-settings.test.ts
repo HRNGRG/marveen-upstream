@@ -15,7 +15,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   mainExtraPluginsSettings, mainExtraPluginsSettingsPath, writeMainExtraPluginsSettings,
+  mainAgentConfigPath, readMainSenderRoleGatePolicy,
 } from '../web/main-extra-plugins-settings.js'
+import { pythonHookCommand } from '../web/agent-scaffold.js'
 import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
 import { mainConfigDecisionForTest } from '../web/main-config-decision.js'
 
@@ -62,6 +64,88 @@ describe('the settings file', () => {
       const flag = shellFlag(dir, SLACK)
       const out = execFileSync('/bin/sh', ['-c', `"${echo}"${flag} --channels x`]).toString()
       expect(out).toBe(`[--settings][${mainExtraPluginsSettingsPath(dir)}][--channels][x]`)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+describe('the main agent\'s sender-role gate rides the same file (MIOAPPTEAMSRV1025)', () => {
+  const GATE = {
+    allowTools: ['mcp__plugin_gromzo-channel_gromzo__reply'],
+    roles: [{ channel: 'gromzo', sender: 'owner', role: 'owner' }, { channel: 'slack', sender: 'U0OWNER', role: 'owner' }],
+    senderKeys: { gromzo: 'sender_role', slack: 'user_id' },
+  }
+  const withConfig = (cfg: unknown, raw?: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'mainxs gate-'))
+    mkdirSync(join(dir, 'store'), { recursive: true })
+    writeFileSync(mainAgentConfigPath(dir), raw ?? JSON.stringify(cfg))
+    return dir
+  }
+
+  it('TS and shell write the SAME file with the gate, without extras too (executed)', () => {
+    for (const ids of [[], [SLACK]]) {
+      const dir = withConfig({ senderRoleGate: GATE })
+      try {
+        const p = writeMainExtraPluginsSettings(dir, ids)
+        expect(p).toBe(mainExtraPluginsSettingsPath(dir))
+        const ts = readFileSync(p!, 'utf-8')
+        const policy = readMainSenderRoleGatePolicy(dir)!
+        expect(JSON.parse(Buffer.from(policy, 'base64url').toString('utf-8'))).toEqual(GATE)
+        expect(JSON.parse(ts).hooks.PreToolUse).toEqual([{ matcher: '*', hooks: [{ type: 'command', timeout: 10,
+          command: pythonHookCommand('$CLAUDE_PROJECT_DIR/scripts/hooks/sender-role-gate.py', ['--policy', policy]) }] }])
+        rmSync(p!)
+        expect(shellFlag(dir, ...ids)).toBe(` --settings "${mainExtraPluginsSettingsPath(dir)}"`)
+        expect(readFileSync(p!, 'utf-8')).toBe(ts)
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
+  })
+
+  it('the wired command, run as Claude Code runs it, denies a colleague\'s Read and lets the reply through (executed)', () => {
+    const dir = withConfig({ senderRoleGate: GATE })
+    try {
+      const { hooks } = JSON.parse(readFileSync(writeMainExtraPluginsSettings(dir, [])!, 'utf-8'))
+      const command: string = hooks.PreToolUse[0].hooks[0].command
+      const transcript = join(dir, 't.jsonl')
+      const turn = (env: string) => JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: `${env}\nhi` },
+        origin: { kind: 'channel', server: 'plugin:gromzo-channel:gromzo' }, turnPosition: { promptIndex: 3, turnIndex: 3 } }) + '\n'
+      const run = (tool: string) => execFileSync('bash', ['-c', command], {
+        env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT },
+        input: JSON.stringify({ tool_name: tool, transcript_path: transcript, hook_event_name: 'PreToolUse' }),
+      }).toString()
+      writeFileSync(transcript, turn('<channel source="plugin:gromzo-channel:gromzo" sender_role="colleague" verified="true" room_kind="channel" reply_to="0123456789abcdef">'))
+      expect(run('Read')).toContain('"permissionDecision": "deny"')
+      expect(run('mcp__plugin_gromzo-channel_gromzo__reply')).toBe('')
+      writeFileSync(transcript, turn('<channel source="plugin:gromzo-channel:gromzo" sender_role="owner" verified="true">'))
+      expect(run('Read')).toBe('')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a non-ASCII value encodes the same on both sides', () => {
+    const dir = withConfig({ senderRoleGate: { ...GATE, roles: [{ channel: 'gromzo', sender: 'tulajdonos-é', role: 'owner' }] } })
+    try {
+      const ts = readFileSync(writeMainExtraPluginsSettings(dir, [])!, 'utf-8')
+      shellFlag(dir)
+      expect(readFileSync(mainExtraPluginsSettingsPath(dir), 'utf-8')).toBe(ts)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('off shapes and an unreadable config: no gate (and no flag without extras) on both sides', () => {
+    for (const [cfg, raw] of [[{}], [{ senderRoleGate: { riskyTools: [] } }], [{ senderRoleGate: {} }], [null, '{not json']] as const) {
+      const dir = withConfig(cfg, raw)
+      try {
+        expect(writeMainExtraPluginsSettings(dir, [])).toBeNull()
+        expect(shellFlag(dir)).toBe('')
+        expect(JSON.parse(readFileSync(writeMainExtraPluginsSettings(dir, [SLACK])!, 'utf-8'))).toEqual({ enabledPlugins: { [SLACK]: true } })
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
+  })
+
+  it('a malformed but present gate is wired (the hook fails closed), the same on both sides', () => {
+    const dir = withConfig({ senderRoleGate: { riskyTools: 'Bash' } })
+    try {
+      const ts = readFileSync(writeMainExtraPluginsSettings(dir, [])!, 'utf-8')
+      expect(JSON.parse(ts).hooks).toBeDefined()
+      shellFlag(dir)
+      expect(readFileSync(mainExtraPluginsSettingsPath(dir), 'utf-8')).toBe(ts)
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

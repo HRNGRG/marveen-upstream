@@ -490,7 +490,7 @@ export function readAgentStateObserver(name: string): boolean {
 // denies the configured risky tools whenever the current turn carries a chat
 // envelope from a sender who is not an owner. These decide whether
 // the launcher WIRES that hook for the agent: the key must be present and not
-// be the explicit "off" shape (riskyTools missing or empty). A malformed
+// be the explicit "off" shape (riskyTools missing or empty, and no allowTools). A malformed
 // value (string, null, array, non-array riskyTools) deliberately returns
 // TRUE -- the hook gets wired and fails closed on its side -- while an
 // unparseable file returns false, matching how the rest of the launcher
@@ -503,6 +503,8 @@ export function senderRoleGateEnabled(config: unknown): boolean {
   if (!Object.hasOwn(cfg, 'senderRoleGate')) return false
   const gate = cfg.senderRoleGate
   if (!gate || typeof gate !== 'object' || Array.isArray(gate)) return true
+  // allowTools present (any value) is a decision for the gate: wired, and the hook judges its shape.
+  if (Object.hasOwn(gate, 'allowTools')) return true
   const risky = (gate as Record<string, unknown>).riskyTools
   if (risky === undefined) return false
   if (Array.isArray(risky) && risky.length === 0) return false

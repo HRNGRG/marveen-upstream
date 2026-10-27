@@ -1716,7 +1716,8 @@ export function injectTelegramCopyGate(existing: Record<string, unknown>): void 
 // spawn, so an edit the agent makes to that file in this session cannot loosen the running gate.
 const SENDER_ROLE_GATE_SCRIPT = 'sender-role-gate.py'
 
-// Sub-agents only: the main agent is out of scope on purpose.
+// Sub-agents only here: the main agent's gate rides its session-only --settings file instead
+// (main-extra-plugins-settings.ts), because the sub-agents read the install-root project settings.
 export function agentGetsSenderRoleGate(name: string): boolean {
   return name !== MAIN_AGENT_ID
 }

@@ -47,12 +47,16 @@ Per agent, in `agents/<name>/agent-config.json`:
 
 - `riskyTools`: glob patterns (case-sensitive). `-` and `_` are the same character here, so
   `mcp__ms365__send_mail` also covers the Graph MCP's `mcp__ms365__send-mail`.
+- `allowTools`: optional, glob patterns as above. In a member turn every tool that does NOT match is denied
+  too, so a tool installed later is closed for a colleague by default, not open. It adds to `riskyTools`
+  (a tool on both is denied). Its presence alone turns the gate on, and an empty list allows nothing in a
+  member turn. Meant for an agent that serves its owner and a team chat in one session (below).
 - `roles`: who is an owner. Anyone else is a member.
 - `senderKeys`: optional, for a channel other than Telegram and Teams: which envelope attribute holds the
   sender id.
 
-The key is off by default. With the key missing, or `riskyTools` missing or empty, the hook is not wired at
-all. At the agent's start the launcher copies the `senderRoleGate` value onto the hook's command line in the
+The key is off by default. With the key missing, or `riskyTools` missing or empty and no `allowTools`, the
+hook is not wired at all. At the agent's start the launcher copies the `senderRoleGate` value onto the hook's command line in the
 generated `.claude/settings.json` (`--policy`, base64url), next to every other gate, so a change to the table
 takes effect at the agent's next start, and an edit the agent itself makes to `agent-config.json` during the
 session does not change the running gate.
@@ -62,13 +66,47 @@ Fail-closed: a malformed `senderRoleGate` value treats every tool as risky and e
 confirmed within 64 MiB from the end, or a half-written or undecodable line inside the turn also count as a member
 turn. A `roles` entry listed twice keeps the stricter role.
 
+## The main agent, and a team chat in one session (gromzo)
+
+The main agent has no `agents/<name>/agent-config.json`; its table lives in `store/main-agent-config.json`
+(per install, gitignored), same shape (`{"senderRoleGate": {...}}`). At the main session's launch
+(`scripts/channels.sh`, and the dashboard's respawn paths) the table rides the session-only `--settings` file
+(`store/.main-extra-plugins.settings.json`, see `scripts/main-extra-plugins-settings.sh`) as a PreToolUse
+hook, so the sub-agents, which read the install-root project settings, never get it. A change takes effect at
+the main session's next start.
+
+For the gromzo channel with `MXD_SCOPE=both` (the owner DM and the team in one session): the plugin writes the
+sender's verified role into the envelope (`sender_role="owner|colleague"`), so
+
+```json
+"senderRoleGate": {
+  "allowTools": ["mcp__plugin_gromzo-channel_gromzo__reply", "mcp__plugin_gromzo-channel_gromzo__typing"],
+  "roles": [
+    { "channel": "gromzo", "sender": "owner", "role": "owner" },
+    { "channel": "slack", "sender": "<owner's Slack user id>", "role": "owner" }
+  ],
+  "senderKeys": { "gromzo": "sender_role", "slack": "user_id" }
+}
+```
+
+Every chat the session listens on needs its owner row: with `allowTools` set, a turn from a channel whose
+owner is not listed is a member turn, and the owner there is held to the allow-list too. gromzo-channel must be
+0.3.1 or later: 0.3.0 also put `source` into its meta, Claude Code (2.1.310) then writes a second `source`
+attribute, and such an envelope counts as a member turn even for the owner.
+
+What the gate does not cover in one session: what is already in the context. The owner profile in CLAUDE.md,
+the loaded memory index, hook-injected blocks and the owner's earlier turns can reach a colleague's reply
+without any tool. The plugin's instructions forbid it for a colleague's message; that is an instruction, not
+a gate (the owner accepted this residual, 2026-10-27).
+
 ## Limits
 
 - The restriction lasts one turn. Text a colleague sent in an earlier turn no longer restricts a later turn
   started by the owner, even if the model still has that text in its context.
 - In `claude -p` (stream-json) runs a channel message leaves no line in the transcript at all (measured with
   CLI 2.1.296), so the gate cannot see it there. It is built for the interactive sessions the fleet runs.
-- The main agent is not covered: the gate is wired for sub-agents only.
+- The main agent is covered only through `store/main-agent-config.json` (above), not through the dashboard's
+  agent settings.
 - A message the owner types at the terminal while the agent is working, if it begins with an envelope tag, counts
   as that sender's message for the rest of the turn (its enqueue line has no origin to tell it apart).
 - An `agent-config.json` that is not valid JSON does not wire the hook (the launcher already treats such a file

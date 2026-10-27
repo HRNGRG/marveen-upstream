@@ -16,13 +16,20 @@ envelope from a sender whose role is not "owner".
 The rule in one sentence: risky tool + any non-owner envelope anywhere in
 the current turn -> deny; everything else -> allow silently.
 
+allowTools (optional) turns the list around for such a turn: every tool that
+does NOT match it is risky too. An agent that serves its owner and colleagues
+in one session (a team chat channel) lists only the chat's own reply tools
+there, so a tool installed later is closed in a colleague's turn by default,
+not open (Dani 50388). riskyTools and allowTools add up: a tool on both is
+denied.
+
 What it reads:
   --policy <base64url of the agent-config.json "senderRoleGate" value, copied
   by the launcher at the agent's start> (or --config <an agent-config.json>
   for tests and manual checks). The value:
-  {"riskyTools": [glob patterns], "roles":
+  {"riskyTools": [glob patterns], "allowTools": [glob patterns], "roles":
   [{"channel","sender","role"}], "senderKeys": {channel: attribute}}.
-  riskyTools patterns are fnmatch-case globs matched after replacing every
+  riskyTools and allowTools patterns are fnmatch-case globs matched after replacing every
   "-" with "_" on BOTH sides, so "send_mail" and "send-mail" are the same
   tool. Sender ids come from the envelope attributes (telegram: user_id,
   teams: aad_object_id, overridable per channel via senderKeys).
@@ -132,17 +139,21 @@ def classify_config(parsed):
         return ("malformed", None, "senderRoleGate is not an object")
     # 1.4(c) beats 1.5: riskyTools missing or [] turns the gate off even when
     # other keys are garbage -- an explicitly empty list is a decision, not a
-    # fault.
-    if "riskyTools" not in gate or gate["riskyTools"] == []:
+    # fault. Unless allowTools is there: its presence alone is a decision for
+    # the gate (an empty allowTools allows nothing in a member turn).
+    if ("riskyTools" not in gate or gate["riskyTools"] == []) and "allowTools" not in gate:
         return ("off", None, None)
     return validate_gate(gate)
 
 
 def validate_gate(gate):
     """A gate that is neither off nor absent: check every key, or say why not."""
-    risky = gate["riskyTools"]
+    risky = gate.get("riskyTools", [])
     if not isinstance(risky, list) or not all(isinstance(p, str) for p in risky):
         return ("malformed", None, "riskyTools is not a list of strings")
+    allow = gate.get("allowTools")  # absent: None, no allow-list
+    if "allowTools" in gate and (not isinstance(allow, list) or not all(isinstance(p, str) for p in allow)):
+        return ("malformed", None, "allowTools is not a list of strings")
     roles_raw = gate.get("roles", [])
     if not isinstance(roles_raw, list):
         return ("malformed", None, "roles is not a list")
@@ -163,10 +174,18 @@ def validate_gate(gate):
         return ("malformed", None, "senderKeys is not an object of strings")
     sender_keys = dict(DEFAULT_SENDER_KEYS)
     sender_keys.update(keys_raw)
-    return ("on", {"riskyTools": risky, "roles": roles, "senderKeys": sender_keys}, None)
+    return ("on", {"riskyTools": risky, "allowTools": allow, "roles": roles, "senderKeys": sender_keys}, None)
 
 
-def tool_is_risky(tool, patterns):
+def tool_is_risky(tool, settings):
+    """On riskyTools, or (allowTools set) not on allowTools."""
+    if tool_matches(tool, settings["riskyTools"]):
+        return True
+    allow = settings["allowTools"]
+    return allow is not None and not tool_matches(tool, allow)
+
+
+def tool_matches(tool, patterns):
     """Glob match with '-'/'_' normalised on BOTH sides (fnmatchcase, so the
     match stays case-sensitive and locale-free)."""
     tool_norm = tool.replace("-", "_")
@@ -435,7 +454,7 @@ def run(raw_stdin, state, settings, problem):
         # 1.5: every tool is risky, every enveloped sender a member.
         risky, roles, sender_keys = True, {}, dict(DEFAULT_SENDER_KEYS)
     else:
-        risky = tool_is_risky(tool, settings["riskyTools"])
+        risky = tool_is_risky(tool, settings)
         roles, sender_keys = settings["roles"], settings["senderKeys"]
     if not risky:
         return 0
