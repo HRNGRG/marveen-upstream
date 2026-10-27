@@ -3222,7 +3222,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       checkRunning = false
     }
   }
-  setTimeout(() => { void check() }, 30000)
+  setTimeout(whileNotFrozen('channel-monitor', () => { void check() }), 30000)
   // KILLSWITCH1022: this tick also revives desired-but-missing agents
   // (reconcileDesiredAgents), which a stopped fleet must not do.
   return setInterval(whileNotFrozen('channel-monitor', () => { void check() }), 60000)

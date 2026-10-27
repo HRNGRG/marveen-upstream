@@ -1278,6 +1278,6 @@ export function startContextGuardRunner(): NodeJS.Timeout {
       tickRunning = false
     }
   }
-  setTimeout(sweep, INITIAL_DELAY_MS)
+  setTimeout(whileNotFrozen('context-guard', sweep), INITIAL_DELAY_MS)
   return setInterval(whileNotFrozen('context-guard', sweep), INTERVAL_MS)
 }

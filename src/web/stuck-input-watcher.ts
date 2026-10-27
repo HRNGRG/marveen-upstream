@@ -328,6 +328,6 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     }
   }
 
-  setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
+  setTimeout(whileNotFrozen('stuck-input', () => { void sweep() }), INITIAL_DELAY_MS)
   return setInterval(whileNotFrozen('stuck-input', () => { void sweep() }), INTERVAL_MS)
 }

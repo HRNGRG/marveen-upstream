@@ -3813,6 +3813,6 @@ export function startScheduleRunner(): NodeJS.Timeout {
   }
 
   // Run immediately on start (catches missed tasks)
-  setTimeout(() => { void runCheck() }, 5000)
+  setTimeout(whileNotFrozen('schedule-runner', () => { void runCheck() }), 5000)
   return setInterval(whileNotFrozen('schedule-runner', () => { void runCheck() }), SCHEDULE_TICK_MS)
 }

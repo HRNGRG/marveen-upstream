@@ -1074,6 +1074,6 @@ export function startStuckToolCallWatcher(): NodeJS.Timeout {
       logger.debug({ err }, 'stuck-tool-call-watcher: sub-agent sweep error')
     }
   }
-  setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
+  setTimeout(whileNotFrozen('stuck-tool-call', () => { void sweep() }), INITIAL_DELAY_MS)
   return setInterval(whileNotFrozen('stuck-tool-call', () => { void sweep() }), INTERVAL_MS)
 }
