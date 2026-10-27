@@ -762,3 +762,8 @@ same level stay on the token: they only narrow what an agent may do. A current
 level that is not a number counts as a raise. On a fresh install with no
 dashboard user yet, the token keeps raising for the setup. The locked
 categories and `maxLevel` are checked as before.
+
+**Not covered, stated out loud:** an agent that can write files can still edit
+`store/autonomy-config.json` directly, and the mail gate reads the file, not
+this endpoint. This change closes the token path only; a write guard for that
+file is separate work.
