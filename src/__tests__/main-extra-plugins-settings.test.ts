@@ -152,6 +152,8 @@ describe('the main agent\'s sender-role gate rides the same file (MIOAPPTEAMSRV1
     const broken: Array<string | Buffer> = [
       '{"senderRoleGate": {"allowTools": ["mcp__plugin_gromzo-channel_gromzo__reply"],', '', '[]', '"x"', 'null',
       '\ufeff{"senderRoleGate": {"allowTools": []}}', Buffer.from([0x7b, 0xff, 0xfe, 0x7d]),
+      // Valid JSON once a lenient decoder replaces the bad byte: still unreadable, as for python.
+      Buffer.concat([Buffer.from('{"senderRoleGate": {"allowTools": ["a'), Buffer.from([0xff]), Buffer.from('"]}}')]),
     ]
     for (const raw of broken) {
       const dir = mkdtempSync(join(tmpdir(), 'mainxs broken-'))
