@@ -94,10 +94,12 @@ edit, not UTF-8) wires the gate anyway, with a policy the hook reads as malforme
 tool is denied. Only a missing file means no gate. (A sub-agent's unreadable `agent-config.json` still means no
 gate; the main session differs because it may carry the team chat.)
 
-The gromzo plugin is enabled for the main session ONLY through this same `--settings` file
-(`CHANNEL_PLUGINS_EXTRA`), never in a settings layer, so a launch without the file has neither the team chat
-nor the gate. `scripts/stuck-modal-guard.sh` respawns the main session without `--settings`, which drops both
-together; any new launch path that enables gromzo elsewhere must carry the gate with it.
+Invariant: team messages reach a session only when gromzo is in its `--channels` list, and gromzo is never the
+main channel provider (`ChannelProviderType` has no gromzo), so it reaches the main session only as an extra
+(`CHANNEL_PLUGINS_EXTRA`). The launchers that add the extras (`scripts/channels.sh`, the dashboard respawns in
+`channel-monitor.ts`) are the ones that write and pass this `--settings` file. `scripts/stuck-modal-guard.sh`
+respawns with the main plugin only and no `--settings`: no gromzo inbound, no gate. Any new launch path that puts
+gromzo into `--channels` must pass the same file.
 
 Every chat the session listens on needs its owner row: with `allowTools` set, a turn from a channel whose
 owner is not listed is a member turn, and the owner there is held to the allow-list too. gromzo-channel must be
