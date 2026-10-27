@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   mainExtraPluginsSettings, mainExtraPluginsSettingsPath, writeMainExtraPluginsSettings,
-  mainAgentConfigPath, readMainSenderRoleGatePolicy,
+  mainAgentConfigPath, readMainSenderRoleGatePolicy, UNREADABLE_POLICY,
 } from '../web/main-extra-plugins-settings.js'
 import { pythonHookCommand } from '../web/agent-scaffold.js'
 import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
@@ -128,15 +128,60 @@ describe('the main agent\'s sender-role gate rides the same file (MIOAPPTEAMSRV1
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
-  it('off shapes and an unreadable config: no gate (and no flag without extras) on both sides', () => {
-    for (const [cfg, raw] of [[{}], [{ senderRoleGate: { riskyTools: [] } }], [{ senderRoleGate: {} }], [null, '{not json']] as const) {
-      const dir = withConfig(cfg, raw)
+  it('off shapes: no gate (and no flag without extras) on both sides', () => {
+    for (const cfg of [{}, { senderRoleGate: { riskyTools: [] } }, { senderRoleGate: {} }]) {
+      const dir = withConfig(cfg)
       try {
         expect(writeMainExtraPluginsSettings(dir, [])).toBeNull()
         expect(shellFlag(dir)).toBe('')
         expect(JSON.parse(readFileSync(writeMainExtraPluginsSettings(dir, [SLACK])!, 'utf-8'))).toEqual({ enabledPlugins: { [SLACK]: true } })
       } finally { rmSync(dir, { recursive: true, force: true }) }
     }
+  })
+
+  it('no file: no gate, no flag (both sides)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mainxs nofile-'))
+    try {
+      expect(readMainSenderRoleGatePolicy(dir)).toBeNull()
+      expect(writeMainExtraPluginsSettings(dir, [])).toBeNull()
+      expect(shellFlag(dir)).toBe('')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a config that exists but is not a readable JSON object wires the gate fail-closed on both sides (Dani 50508 (1))', () => {
+    const broken: Array<string | Buffer> = [
+      '{"senderRoleGate": {"allowTools": ["mcp__plugin_gromzo-channel_gromzo__reply"],', '', '[]', '"x"', 'null',
+      '\ufeff{"senderRoleGate": {"allowTools": []}}', Buffer.from([0x7b, 0xff, 0xfe, 0x7d]),
+    ]
+    for (const raw of broken) {
+      const dir = mkdtempSync(join(tmpdir(), 'mainxs broken-'))
+      mkdirSync(join(dir, 'store'), { recursive: true })
+      writeFileSync(mainAgentConfigPath(dir), raw)
+      try {
+        expect(readMainSenderRoleGatePolicy(dir)).toBe(UNREADABLE_POLICY)
+        const ts = readFileSync(writeMainExtraPluginsSettings(dir, [SLACK])!, 'utf-8')
+        expect(JSON.parse(ts).hooks.PreToolUse[0].hooks[0].command).toContain(`--policy ${UNREADABLE_POLICY}`)
+        rmSync(mainExtraPluginsSettingsPath(dir))
+        expect(shellFlag(dir, SLACK)).toBe(` --settings "${mainExtraPluginsSettingsPath(dir)}"`)
+        expect(readFileSync(mainExtraPluginsSettingsPath(dir), 'utf-8')).toBe(ts)
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    }
+    // The hook reads that policy as malformed: a colleague's turn gets nothing, the owner's reply goes through.
+    const dir = withConfig(null, '{"senderRoleGate": {')
+    try {
+      const { hooks } = JSON.parse(readFileSync(writeMainExtraPluginsSettings(dir, [])!, 'utf-8'))
+      const transcript = join(dir, 't.jsonl')
+      const env = (role: string) => JSON.stringify({ type: 'user', isMeta: true,
+        message: { role: 'user', content: `<channel source="plugin:gromzo-channel:gromzo" sender_role="${role}" verified="true">\nhi` },
+        origin: { kind: 'channel', server: 'plugin:gromzo-channel:gromzo' }, turnPosition: { promptIndex: 3, turnIndex: 3 } }) + '\n'
+      writeFileSync(transcript, env('colleague'))
+      const out = execFileSync('bash', ['-c', hooks.PreToolUse[0].hooks[0].command], {
+        env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT },
+        input: JSON.stringify({ tool_name: 'mcp__plugin_gromzo-channel_gromzo__reply', transcript_path: transcript, hook_event_name: 'PreToolUse' }),
+      }).toString()
+      expect(out).toContain('"permissionDecision": "deny"')
+      expect(out).toContain('malformed')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('a malformed but present gate is wired (the hook fails closed), the same on both sides', () => {

@@ -89,6 +89,16 @@ sender's verified role into the envelope (`sender_role="owner|colleague"`), so
 }
 ```
 
+A `store/main-agent-config.json` that exists but is not a readable JSON object (a truncated write, a hand
+edit, not UTF-8) wires the gate anyway, with a policy the hook reads as malformed: in a non-owner's turn every
+tool is denied. Only a missing file means no gate. (A sub-agent's unreadable `agent-config.json` still means no
+gate; the main session differs because it may carry the team chat.)
+
+The gromzo plugin is enabled for the main session ONLY through this same `--settings` file
+(`CHANNEL_PLUGINS_EXTRA`), never in a settings layer, so a launch without the file has neither the team chat
+nor the gate. `scripts/stuck-modal-guard.sh` respawns the main session without `--settings`, which drops both
+together; any new launch path that enables gromzo elsewhere must carry the gate with it.
+
 Every chat the session listens on needs its owner row: with `allowTools` set, a turn from a channel whose
 owner is not listed is a member turn, and the owner there is held to the allow-list too. gromzo-channel must be
 0.3.1 or later: 0.3.0 also put `source` into its meta, Claude Code (2.1.310) then writes a second `source`

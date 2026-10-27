@@ -30,22 +30,35 @@ import base64, json, os, sys, tempfile
 path, cfg_path, ids = sys.argv[1], sys.argv[2], [i for i in sys.argv[3:] if i]
 
 
+def b64(value):
+    raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
 def gate_policy(cfg_path):
-    # senderRoleGatePolicyArg() in src/web/agent-config.ts, line for line.
+    # readMainSenderRoleGatePolicy() in src/web/main-extra-plugins-settings.ts: a file that
+    # exists but is not a readable JSON object wires the gate as malformed (fail-closed).
     try:
         with open(cfg_path, encoding="utf-8") as f:
-            cfg = json.load(f)
-    except (OSError, ValueError):
+            raw = f.read()
+    except FileNotFoundError:
         return None
-    if not isinstance(cfg, dict) or "senderRoleGate" not in cfg:
+    except (OSError, ValueError):
+        return b64("unreadable")
+    try:
+        cfg = json.loads(raw)
+    except ValueError:
+        return b64("unreadable")
+    if not isinstance(cfg, dict):
+        return b64("unreadable")
+    if "senderRoleGate" not in cfg:
         return None
     gate = cfg["senderRoleGate"]
     if isinstance(gate, dict) and "allowTools" not in gate:
         risky = gate.get("riskyTools")
         if risky is None or risky == []:
             return None
-    raw = json.dumps(gate, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return b64(gate)
 
 
 policy = gate_policy(cfg_path)

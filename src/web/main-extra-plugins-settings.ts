@@ -23,12 +23,30 @@ export function mainAgentConfigPath(installDir: string): string {
   return join(installDir, 'store', 'main-agent-config.json')
 }
 
-/** The gate's --policy for the main agent, or null (no file, not JSON, or the gate off). */
+/**
+ * The policy for a main-agent-config.json that exists but cannot be read as a JSON object (a
+ * truncated write, a hand edit): a value the gate classifies as malformed, so it is wired and
+ * every tool is denied in a non-owner's turn (Dani 50508 (1)). Unlike a sub-agent's broken
+ * agent-config.json, the main session may carry the team chat, so a broken table must not
+ * mean no gate.
+ */
+export const UNREADABLE_POLICY = Buffer.from(JSON.stringify('unreadable'), 'utf-8').toString('base64url')
+
+/** The gate's --policy for the main agent: null with no file or the gate off; UNREADABLE_POLICY for a broken file. */
 export function readMainSenderRoleGatePolicy(installDir: string): string | null {
+  let raw: string
   try {
-    return senderRoleGatePolicyArg(JSON.parse(readFileSync(mainAgentConfigPath(installDir), 'utf-8')))
+    // Strict UTF-8 and the BOM kept, as the shell twin's python reads it: an undecodable file is unreadable.
+    raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(readFileSync(mainAgentConfigPath(installDir)))
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : UNREADABLE_POLICY
+  }
+  try {
+    const cfg: unknown = JSON.parse(raw)
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return UNREADABLE_POLICY
+    return senderRoleGatePolicyArg(cfg)
   } catch {
-    return null
+    return UNREADABLE_POLICY
   }
 }
 
