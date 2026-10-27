@@ -685,11 +685,37 @@ What happens now:
   (`install-macos.sh`, `install-linux.sh`) derive the id from `BOT_NAME`
   without this check.
 
-**Not covered, stated out loud:** the rest of the import (agent files, settings,
-the vault, scheduled tasks) still writes with the same shared token, and on a
-single-user host an agent whose Bash is permissive can write `.env` directly.
-Closing those needs the per-agent identity decision (#1985) and per-agent OS
-users, not this filter.
+**Not covered, stated out loud:** on a single-user host an agent whose Bash is
+permissive can write `.env` directly. Closing that needs the per-agent identity
+decision (#1985) and per-agent OS users, not this filter. (The rest of the
+import no longer runs on the shared token once a login exists: see the next
+section.)
+
+# Fleet transfer: the applied import and the vault export take the owner
+
+FLEETIMPORTGATE1022. The fleet's one shared dashboard token reaches
+`/api/fleet/*` from every agent, and two of those calls were wider than the
+token should reach:
+
+- `POST /api/fleet/import?apply=true` overwrites `store/autonomy-config.json`
+  from the payload, `maxLevel` included. With `email_send` at 3 the mail
+  approval gate (`scripts/hooks/email-approval-gate.py`) lets every send
+  through; measured in a throwaway store: level 2 denies, level 3 allows. The
+  same call writes the agents' settings and the global skills.
+- `GET /api/fleet/export` with an `X-Vault-Password` returns the vault's master
+  key and every secret, encrypted with a password the CALLER chose, so the
+  caller can open it.
+
+Once a dashboard login exists, both take the owner's session
+(`mayIssueCredentials`, the predicate of the credential-issuing routes since
+DEVKEYMINT1022), checked before the body is read or anything is exported; any
+other caller gets 403 `owner_session_required`. A full device key is refused
+too. The dry run (no `apply`, writes nothing) and the export without a vault
+password (no secret; it refuses rather than leak one) stay on the token. On a
+fresh install with no dashboard user yet, the token keeps both for the setup.
+
+Related, not changed here: `POST /api/autonomy` raises a level with the token
+too, up to the category's `maxLevel` (a locked category stays at 1).
 
 # Sub-agent mail gate: sender scripts under any name
 

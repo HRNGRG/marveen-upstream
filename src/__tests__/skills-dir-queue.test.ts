@@ -202,7 +202,8 @@ describe('skill directory operations run one at a time', () => {
     process.env.PROBE_SKILL = 's5'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    const imp = call(tryHandleFleet, 'POST', '/api/fleet/import?apply=true', {})
+    // An applied import is the owner's (FLEETIMPORTGATE1022).
+    const imp = call(tryHandleFleet, 'POST', '/api/fleet/import?apply=true', {}, SESSION)
     const [e, i] = await Promise.all([exp, imp])
     expect(e.status).toBe(200)
     expect(i.status).toBe(200)
